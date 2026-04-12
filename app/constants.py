@@ -1,0 +1,12 @@
+PENDING = "pending"
+ACCEPTED = "accepted"
+REJECTED = "rejected"
+
+VALID_STATUSES = {PENDING, ACCEPTED, REJECTED}
+DEFAULT_EXPORT_STATUSES = [ACCEPTED]
+
+STATUS_LABELS = {
+    PENDING: "待定",
+    ACCEPTED: "接受",
+    REJECTED: "拒绝",
+}

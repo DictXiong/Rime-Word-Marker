@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>词库管理 - Rime Word Marker</title>
+    <link rel="stylesheet" href="/css/styles.css" />
+  </head>
+  <body data-page="manage">
+    <div class="aurora aurora-left"></div>
+    <div class="aurora aurora-right"></div>
+
+    <main class="app-shell">
+      <header class="hero page-hero">
+        <div>
+          <p class="eyebrow">Manage</p>
+          <h1>词库管理</h1>
+        </div>
+      </header>
+
+      <nav class="top-nav">
+        <a class="nav-chip" href="/">首页</a>
+        <a class="nav-chip" href="/review">筛词</a>
+        <a class="nav-chip" href="/import">导入 / 导出</a>
+        <a class="nav-chip active" href="/manage">词库管理</a>
+      </nav>
+
+      <article class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>词库管理</h2>
+          </div>
+        </div>
+
+        <section class="stats-grid compact-stats" id="statsGrid">
+          <article class="stat-card">
+            <span>总词条</span>
+            <strong id="statTotal">0</strong>
+          </article>
+          <article class="stat-card pending">
+            <span>待定</span>
+            <strong id="statPending">0</strong>
+          </article>
+          <article class="stat-card accepted">
+            <span>接受</span>
+            <strong id="statAccepted">0</strong>
+          </article>
+          <article class="stat-card rejected">
+            <span>拒绝</span>
+            <strong id="statRejected">0</strong>
+          </article>
+        </section>
+
+        <form class="toolbar" id="manageFilterForm">
+          <label class="field compact grow">
+            <span>搜索词条 / 拼音</span>
+            <input type="text" id="manageQuery" placeholder="支持模糊搜索" />
+          </label>
+
+          <label class="field compact">
+            <span>状态</span>
+            <select id="manageStatus">
+              <option value="all">全部</option>
+              <option value="pending">待定</option>
+              <option value="accepted">接受</option>
+              <option value="rejected">拒绝</option>
+            </select>
+          </label>
+
+          <label class="field compact">
+            <span>每页数量</span>
+            <select id="managePageSize">
+              <option value="20">20</option>
+              <option value="30" selected>30</option>
+              <option value="50">50</option>
+              <option value="100">100</option>
+            </select>
+          </label>
+
+          <button class="primary-button small" type="submit">刷新</button>
+        </form>
+
+        <section class="bulk-panel">
+          <div class="bulk-meta">
+            <strong id="selectedCount">已选择 0 条</strong>
+            <span>可跨分页保留选择，再统一处理。</span>
+          </div>
+
+          <div class="bulk-actions">
+            <button class="ghost-button small-inline" type="button" id="selectPageButton">选择本页</button>
+            <button class="ghost-button small-inline" type="button" id="clearSelectionButton">清空选择</button>
+            <button class="decision-button mini-accept" type="button" id="bulkAcceptButton">批量接受</button>
+            <button class="decision-button mini-pending" type="button" id="bulkPendingButton">批量待定</button>
+            <button class="decision-button mini-reject" type="button" id="bulkRejectButton">批量拒绝</button>
+            <button class="primary-button small-inline" type="button" id="openBulkEditButton">批量编辑</button>
+          </div>
+        </section>
+
+        <div class="table-shell">
+          <div class="entry-table-wrap" id="entryList"></div>
+        </div>
+
+        <div class="pagination" id="pagination">
+          <button class="ghost-button" id="pagePrev">上一页</button>
+          <span id="pageInfo">第 1 / 1 页</span>
+          <form class="pagination-jump" id="pageJumpForm">
+            <label class="field inline compact pagination-jump-field">
+              <span>页码</span>
+              <input type="number" id="pageJumpInput" min="1" step="1" inputmode="numeric" value="1" />
+            </label>
+            <button class="ghost-button" type="submit">跳转</button>
+          </form>
+          <button class="ghost-button" id="pageNext">下一页</button>
+        </div>
+      </article>
+    </main>
+
+    <dialog class="edit-dialog" id="entryEditDialog">
+      <form class="edit-dialog-card" id="entryEditForm" method="dialog">
+        <div class="panel-head compact-head">
+          <div>
+            <p class="section-kicker">词条编辑</p>
+            <h2>修改词条信息</h2>
+          </div>
+          <button class="ghost-button small-inline" type="button" id="entryEditCloseButton">关闭</button>
+        </div>
+
+        <input type="hidden" id="editEntryId" />
+
+        <div class="edit-grid">
+          <label class="field">
+            <span>词条</span>
+            <input type="text" id="editPhrase" required />
+          </label>
+
+          <label class="field">
+            <span>词频</span>
+            <input type="number" id="editWeight" step="1" />
+          </label>
+
+          <label class="field field-wide">
+            <span>拼音</span>
+            <input type="text" id="editPinyin" placeholder="支持带声调拼音" />
+          </label>
+
+          <div class="field field-wide">
+            <span>拼音操作</span>
+            <button class="ghost-button small-inline left-align" type="button" id="editAutoPinyinButton">
+              根据当前词条自动重算拼音
+            </button>
+          </div>
+
+          <label class="field">
+            <span>状态</span>
+            <select id="editStatus">
+              <option value="pending">待定</option>
+              <option value="accepted">接受</option>
+              <option value="rejected">拒绝</option>
+            </select>
+          </label>
+
+          <label class="field">
+            <span>导入时间</span>
+            <input type="datetime-local" id="editImportedAt" required />
+          </label>
+
+          <label class="field">
+            <span>标注时间</span>
+            <input type="datetime-local" id="editLabeledAt" />
+          </label>
+        </div>
+
+        <div class="dialog-actions">
+          <button class="ghost-button" type="button" id="editClearLabeledAtButton">清空标注时间</button>
+          <button class="primary-button" type="submit">保存全部修改</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog class="edit-dialog" id="bulkEditDialog">
+      <form class="edit-dialog-card" id="bulkEditForm" method="dialog">
+        <div class="panel-head compact-head">
+          <div>
+            <p class="section-kicker">批量编辑</p>
+            <h2>对已选词条统一修改</h2>
+          </div>
+          <button class="ghost-button small-inline" type="button" id="bulkEditCloseButton">关闭</button>
+        </div>
+
+        <div class="edit-grid">
+          <label class="field toggle-field field-wide">
+            <span><input type="checkbox" id="bulkApplyStatus" /> 统一状态</span>
+            <select id="bulkStatus">
+              <option value="pending">待定</option>
+              <option value="accepted">接受</option>
+              <option value="rejected">拒绝</option>
+            </select>
+          </label>
+
+          <label class="field toggle-field">
+            <span><input type="checkbox" id="bulkApplyWeight" /> 统一词频</span>
+            <input type="number" id="bulkWeight" step="1" />
+          </label>
+
+          <label class="field toggle-field">
+            <span><input type="checkbox" id="bulkApplyImportedAt" /> 统一导入时间</span>
+            <input type="datetime-local" id="bulkImportedAt" />
+          </label>
+
+          <label class="field toggle-field field-wide">
+            <span><input type="checkbox" id="bulkApplyPinyin" /> 统一拼音</span>
+            <input type="text" id="bulkPinyin" placeholder="为空时会按每个词条自动重算" />
+          </label>
+
+          <label class="field toggle-field field-wide">
+            <span><input type="checkbox" id="bulkRegeneratePinyin" /> 按各自词条自动重算拼音</span>
+            <small class="field-helper">适合导入旧词库后统一补带声调拼音。</small>
+          </label>
+
+          <label class="field toggle-field">
+            <span><input type="checkbox" id="bulkApplyLabeledAt" /> 统一标注时间</span>
+            <input type="datetime-local" id="bulkLabeledAt" />
+          </label>
+
+          <label class="field toggle-field">
+            <span><input type="checkbox" id="bulkClearLabeledAt" /> 清空标注时间</span>
+            <small class="field-helper">清空会覆盖上面的统一标注时间。</small>
+          </label>
+        </div>
+
+        <div class="dialog-actions">
+          <span class="dialog-note" id="bulkTargetSummary">将作用于 0 条词条</span>
+          <button class="primary-button" type="submit">应用到所选词条</button>
+        </div>
+      </form>
+    </dialog>
+
+    <div class="toast" id="toast"></div>
+    <script src="/js/app.js"></script>
+  </body>
+</html>

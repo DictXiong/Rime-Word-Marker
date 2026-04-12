@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>筛词 - Rime Word Marker</title>
+    <link rel="stylesheet" href="/css/styles.css" />
+  </head>
+  <body data-page="review">
+    <div class="aurora aurora-left"></div>
+    <div class="aurora aurora-right"></div>
+
+    <main class="app-shell">
+      <header class="hero page-hero">
+        <div>
+          <p class="eyebrow">Review</p>
+          <h1>逐条标注</h1>
+        </div>
+      </header>
+
+      <nav class="top-nav">
+        <a class="nav-chip" href="/">首页</a>
+        <a class="nav-chip active" href="/review">筛词</a>
+        <a class="nav-chip" href="/import">导入 / 导出</a>
+        <a class="nav-chip" href="/manage">词库管理</a>
+      </nav>
+
+      <section class="panel review-panel">
+        <div class="panel-head">
+          <div>
+            <h2>逐条标注</h2>
+          </div>
+          <div class="review-actions-top">
+            <details class="help-menu">
+              <summary class="help-button" aria-label="查看筛词提示">?</summary>
+              <div class="help-popover">
+                <strong>筛词提示</strong>
+                <ul class="help-list">
+                  <li>支持电脑键盘、手机触屏。</li>
+                  <li>历史菜单可跳回任意过往词条，也可回到最新待定词。</li>
+                  <li>保存拼音快捷键：`Ctrl/Cmd + S`。</li>
+                  <li>审核快捷键：`← / ↓ / →`、`J / K / L`、`1 / 2 / 3`、`A / S / D`。</li>
+                </ul>
+              </div>
+            </details>
+            <div class="mode-switch" id="reviewModeSwitch">
+              <button class="mode-chip" type="button" data-review-mode="sequential">顺序模式</button>
+              <button class="mode-chip" type="button" data-review-mode="random">随机模式</button>
+            </div>
+            <details class="history-jump" id="reviewHistoryMenu">
+              <summary class="ghost-button history-trigger">历史 <span class="history-caret">▾</span></summary>
+              <div class="history-dropdown" id="reviewHistoryDropdown">
+                <button class="history-option active" type="button" data-history-target="latest">最新待定词</button>
+              </div>
+            </details>
+          </div>
+        </div>
+
+        <div class="review-stage">
+          <article class="review-card" id="reviewCard">
+            <div class="status-pill pending" id="reviewStatus">待定</div>
+            <div class="review-word" id="reviewWord">准备开始…</div>
+            <div class="review-pinyin" id="reviewPinyin">导入词库后即可进入连续筛词。</div>
+            <form class="review-pinyin-editor" id="reviewPinyinForm">
+              <label class="field grow">
+                <span>拼音</span>
+                <input type="text" id="reviewPinyinInput" placeholder="可手动修改拼音，支持带声调" />
+              </label>
+              <div class="review-inline-actions">
+                <button class="ghost-button small-inline" type="button" id="reviewAutoPinyinButton">自动重算</button>
+                <button class="primary-button small-inline" type="submit" id="reviewSavePinyinButton">保存拼音</button>
+              </div>
+            </form>
+            <div class="review-meta">
+              <span id="reviewWeight">词频 -</span>
+              <span id="reviewImportedAt">导入时间 -</span>
+              <span id="reviewLabeledAt">标注时间 -</span>
+            </div>
+          </article>
+        </div>
+
+        <div class="review-controls">
+          <button class="decision-button accept" data-status="accepted">
+            <span>接受</span>
+          </button>
+          <button class="decision-button pending" data-status="pending">
+            <span>待定</span>
+          </button>
+          <button class="decision-button reject" data-status="rejected">
+            <span>拒绝</span>
+          </button>
+        </div>
+      </section>
+    </main>
+
+    <div class="toast" id="toast"></div>
+    <script src="/js/app.js"></script>
+  </body>
+</html>

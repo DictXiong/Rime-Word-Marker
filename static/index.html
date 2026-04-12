@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Rime Word Marker</title>
+    <link rel="stylesheet" href="/css/styles.css" />
+  </head>
+  <body data-page="home">
+    <div class="aurora aurora-left"></div>
+    <div class="aurora aurora-right"></div>
+
+    <main class="app-shell">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">Rime Lexicon Marker</p>
+          <h1>词库标注器</h1>
+          <p class="hero-copy">导入、筛选、管理、导出个人词库</p>
+        </div>
+
+        <section class="stats-grid" id="statsGrid">
+          <article class="stat-card">
+            <span>总词条</span>
+            <strong id="statTotal">0</strong>
+          </article>
+          <article class="stat-card pending">
+            <span>待定</span>
+            <strong id="statPending">0</strong>
+          </article>
+          <article class="stat-card accepted">
+            <span>接受</span>
+            <strong id="statAccepted">0</strong>
+          </article>
+          <article class="stat-card rejected">
+            <span>拒绝</span>
+            <strong id="statRejected">0</strong>
+          </article>
+        </section>
+      </header>
+
+      <nav class="top-nav">
+        <a class="nav-chip active" href="/">首页</a>
+        <a class="nav-chip" href="/review">筛词</a>
+        <a class="nav-chip" href="/import">导入 / 导出</a>
+        <a class="nav-chip" href="/manage">词库管理</a>
+      </nav>
+
+      <section class="feature-grid">
+        <article class="panel feature-card">
+          <h2>词库导入 / 导出</h2>
+          <p class="panel-subcopy">
+            支持 Rime 风格导入与 YAML 导出，自动去重、补拼音、补词频，适合整理大词库。
+          </p>
+          <a class="primary-button feature-link" href="/import">进入导入 / 导出</a>
+        </article>
+
+        <article class="panel feature-card">
+          <h2>逐条筛词</h2>
+          <p class="panel-subcopy">
+            一次只看一个词条，支持键盘、触屏、拼音快速编辑与顺序 / 随机模式，适合长时间高效审核。
+          </p>
+          <a class="primary-button feature-link" href="/review">进入筛词页</a>
+        </article>
+
+        <article class="panel feature-card">
+          <h2>词库管理</h2>
+          <p class="panel-subcopy">
+            用高密度表格查看、搜索、分页、批量处理和编辑词条，适合维护几十万规模的词库。
+          </p>
+          <a class="primary-button feature-link" href="/manage">进入词库管理</a>
+        </article>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <p class="section-kicker">使用方式</p>
+            <h2>怎么使用</h2>
+          </div>
+        </div>
+        <p class="panel-subcopy">
+          首页用于查看整体概况，并快速进入不同工作页面。导入 / 导出页面适合处理词库文件的进出，支持直接导入大词库并按状态导出。
+          筛词页面专注于连续审核，一次展示一个词条，适合长时间高频标注。词库管理页面则提供高密度表格视图，方便搜索、分页浏览、
+          批量修改和精细维护已有词条。三类页面分工明确，来回切换时也能保持当前词库状态和审核进度。
+        </p>
+      </section>
+    </main>
+
+    <div class="toast" id="toast"></div>
+    <script src="/js/app.js"></script>
+  </body>
+</html>

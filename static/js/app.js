@@ -1,0 +1,1296 @@
+const STATUS_LABELS = {
+  pending: "待定",
+  accepted: "接受",
+  rejected: "拒绝",
+};
+const REVIEW_SESSION_STORAGE_KEY = "reviewSessionKey";
+let fallbackReviewSessionKey = null;
+
+function getCurrentPage() {
+  return document.body?.dataset.page || "home";
+}
+
+function getReviewSessionKey() {
+  try {
+    let sessionKey = window.sessionStorage.getItem(REVIEW_SESSION_STORAGE_KEY);
+    if (!sessionKey) {
+      sessionKey =
+        window.crypto?.randomUUID?.() ||
+        `review-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+      window.sessionStorage.setItem(REVIEW_SESSION_STORAGE_KEY, sessionKey);
+    }
+    return sessionKey;
+  } catch {
+    if (!fallbackReviewSessionKey) {
+      fallbackReviewSessionKey = `review-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    }
+    return fallbackReviewSessionKey;
+  }
+}
+
+const state = {
+  activeView: getCurrentPage(),
+  review: {
+    timeline: [],
+    pointer: -1,
+    loading: false,
+    canGoBack: false,
+    mode: getStoredReviewMode(),
+  },
+  manage: {
+    page: 1,
+    pageSize: 30,
+    status: "all",
+    query: "",
+    totalPages: 1,
+    currentItems: [],
+    selectedIds: new Set(),
+  },
+  edit: {
+    entryId: null,
+    forceClearLabeledAt: false,
+  },
+};
+
+const els = {};
+
+document.addEventListener("DOMContentLoaded", async () => {
+  state.activeView = getCurrentPage();
+  cacheElements();
+  bindEvents();
+  updateReviewModeButtons();
+  updateSelectedCount();
+  await refreshStats();
+
+  if (els.reviewCard) {
+    await ensureReviewEntry(true);
+  }
+
+  if (els.manageFilterForm) {
+    state.manage.query = els.manageQuery?.value.trim() || "";
+    state.manage.status = els.manageStatus?.value || "all";
+    state.manage.pageSize = Number(els.managePageSize?.value || state.manage.pageSize);
+    await loadManageEntries();
+  }
+
+  if (els.exportForm) {
+    await updateExportCount();
+  }
+});
+
+function getStoredReviewMode() {
+  try {
+    const mode = window.localStorage.getItem("reviewMode");
+    return mode === "random" ? "random" : "sequential";
+  } catch {
+    return "sequential";
+  }
+}
+
+function storeReviewMode(mode) {
+  try {
+    window.localStorage.setItem("reviewMode", mode);
+  } catch {
+    // Ignore storage failures and keep using in-memory mode.
+  }
+}
+
+function cacheElements() {
+  els.statTotal = document.getElementById("statTotal");
+  els.statPending = document.getElementById("statPending");
+  els.statAccepted = document.getElementById("statAccepted");
+  els.statRejected = document.getElementById("statRejected");
+
+  els.reviewCard = document.getElementById("reviewCard");
+  els.reviewStatus = document.getElementById("reviewStatus");
+  els.reviewWord = document.getElementById("reviewWord");
+  els.reviewPinyin = document.getElementById("reviewPinyin");
+  els.reviewWeight = document.getElementById("reviewWeight");
+  els.reviewImportedAt = document.getElementById("reviewImportedAt");
+  els.reviewLabeledAt = document.getElementById("reviewLabeledAt");
+  els.reviewHistoryMenu = document.getElementById("reviewHistoryMenu");
+  els.reviewHistoryDropdown = document.getElementById("reviewHistoryDropdown");
+  els.reviewPinyinForm = document.getElementById("reviewPinyinForm");
+  els.reviewPinyinInput = document.getElementById("reviewPinyinInput");
+  els.reviewAutoPinyinButton = document.getElementById("reviewAutoPinyinButton");
+  els.reviewSavePinyinButton = document.getElementById("reviewSavePinyinButton");
+  els.reviewModeButtons = [...document.querySelectorAll("[data-review-mode]")];
+
+  els.importForm = document.getElementById("importForm");
+  els.importFile = document.getElementById("importFile");
+  els.importText = document.getElementById("importText");
+  els.importMessage = document.getElementById("importMessage");
+
+  els.exportForm = document.getElementById("exportForm");
+  els.exportName = document.getElementById("exportName");
+  els.includeWeight = document.getElementById("includeWeight");
+  els.exportCountNote = document.getElementById("exportCountNote");
+  els.importLoadingOverlay = document.getElementById("importLoadingOverlay");
+  els.importLoadingText = document.getElementById("importLoadingText");
+
+  els.manageFilterForm = document.getElementById("manageFilterForm");
+  els.manageQuery = document.getElementById("manageQuery");
+  els.manageStatus = document.getElementById("manageStatus");
+  els.managePageSize = document.getElementById("managePageSize");
+  els.entryList = document.getElementById("entryList");
+  els.pageInfo = document.getElementById("pageInfo");
+  els.pagePrev = document.getElementById("pagePrev");
+  els.pageNext = document.getElementById("pageNext");
+  els.pageJumpForm = document.getElementById("pageJumpForm");
+  els.pageJumpInput = document.getElementById("pageJumpInput");
+  els.selectedCount = document.getElementById("selectedCount");
+  els.selectPageButton = document.getElementById("selectPageButton");
+  els.clearSelectionButton = document.getElementById("clearSelectionButton");
+  els.bulkAcceptButton = document.getElementById("bulkAcceptButton");
+  els.bulkPendingButton = document.getElementById("bulkPendingButton");
+  els.bulkRejectButton = document.getElementById("bulkRejectButton");
+  els.openBulkEditButton = document.getElementById("openBulkEditButton");
+
+  els.entryEditDialog = document.getElementById("entryEditDialog");
+  els.entryEditForm = document.getElementById("entryEditForm");
+  els.entryEditCloseButton = document.getElementById("entryEditCloseButton");
+  els.editEntryId = document.getElementById("editEntryId");
+  els.editPhrase = document.getElementById("editPhrase");
+  els.editPinyin = document.getElementById("editPinyin");
+  els.editWeight = document.getElementById("editWeight");
+  els.editStatus = document.getElementById("editStatus");
+  els.editImportedAt = document.getElementById("editImportedAt");
+  els.editLabeledAt = document.getElementById("editLabeledAt");
+  els.editAutoPinyinButton = document.getElementById("editAutoPinyinButton");
+  els.editClearLabeledAtButton = document.getElementById("editClearLabeledAtButton");
+
+  els.bulkEditDialog = document.getElementById("bulkEditDialog");
+  els.bulkEditForm = document.getElementById("bulkEditForm");
+  els.bulkEditCloseButton = document.getElementById("bulkEditCloseButton");
+  els.bulkTargetSummary = document.getElementById("bulkTargetSummary");
+  els.bulkApplyStatus = document.getElementById("bulkApplyStatus");
+  els.bulkStatus = document.getElementById("bulkStatus");
+  els.bulkApplyWeight = document.getElementById("bulkApplyWeight");
+  els.bulkWeight = document.getElementById("bulkWeight");
+  els.bulkApplyImportedAt = document.getElementById("bulkApplyImportedAt");
+  els.bulkImportedAt = document.getElementById("bulkImportedAt");
+  els.bulkApplyPinyin = document.getElementById("bulkApplyPinyin");
+  els.bulkPinyin = document.getElementById("bulkPinyin");
+  els.bulkRegeneratePinyin = document.getElementById("bulkRegeneratePinyin");
+  els.bulkApplyLabeledAt = document.getElementById("bulkApplyLabeledAt");
+  els.bulkLabeledAt = document.getElementById("bulkLabeledAt");
+  els.bulkClearLabeledAt = document.getElementById("bulkClearLabeledAt");
+
+  els.toast = document.getElementById("toast");
+}
+
+function bindEvents() {
+  document.querySelectorAll("[data-view]").forEach((button) => {
+    button.addEventListener("click", () => switchView(button.dataset.view));
+  });
+
+  if (els.reviewCard) {
+    document.querySelectorAll(".decision-button[data-status]").forEach((button) => {
+      button.addEventListener("click", () => labelCurrent(button.dataset.status));
+    });
+
+    els.reviewPinyinForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      await saveCurrentReviewPinyin(false);
+    });
+    els.reviewAutoPinyinButton.addEventListener("click", async () => {
+      await fillReviewPinyinFromPhrase();
+    });
+    els.reviewModeButtons.forEach((button) => {
+      button.addEventListener("click", async () => {
+        await setReviewMode(button.dataset.reviewMode);
+      });
+    });
+    els.reviewHistoryDropdown?.addEventListener("click", (event) => {
+      const option = event.target.closest("[data-history-target]");
+      if (!option) return;
+      jumpToReviewHistory(option.dataset.historyTarget);
+    });
+  }
+
+  document.addEventListener("click", (event) => {
+    document.querySelectorAll("details[open]").forEach((detail) => {
+      if (!detail.contains(event.target)) {
+        detail.removeAttribute("open");
+      }
+    });
+  });
+
+  document.addEventListener("keydown", async (event) => {
+    if (state.activeView !== "review") return;
+
+    if ((event.ctrlKey || event.metaKey) && (event.key === "s" || event.key === "S")) {
+      event.preventDefault();
+      await saveCurrentReviewPinyin(false);
+      return;
+    }
+
+    if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+      event.preventDefault();
+      await saveCurrentReviewPinyin(false);
+      return;
+    }
+
+    if (["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName)) return;
+
+    const key = event.key;
+    if (key === "ArrowLeft" || ["j", "J", "1", "a", "A"].includes(key)) {
+      event.preventDefault();
+      await labelCurrent("accepted");
+    } else if (key === "ArrowDown" || ["k", "K", "2", "s", "S"].includes(key)) {
+      event.preventDefault();
+      await labelCurrent("pending");
+    } else if (key === "ArrowRight" || ["l", "L", "3", "d", "D"].includes(key)) {
+      event.preventDefault();
+      await labelCurrent("rejected");
+    }
+  });
+
+  if (els.importForm) {
+    els.importForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const file = els.importFile.files?.[0] || null;
+      const text = els.importText.value.trim();
+
+      if (!file && !text) {
+        showMessage("请先选择文件或粘贴导入内容。");
+        return;
+      }
+
+      try {
+        setImportBusy(true, file ? `正在导入文件：${file.name}` : "正在处理粘贴的词库内容");
+        const payload = file
+          ? await postRawText("/api/import-file", file)
+          : await postJSON("/api/import", { text });
+        const result = payload.result;
+        const summary = `词库包含 ${result.parsed} 条，其中 ${result.inserted} 条新词条，${result.accepted_existing} 条已被标注为接受，${result.rejected_existing} 条已被标注为拒绝。`;
+        showMessage(summary);
+        els.importText.value = "";
+        els.importFile.value = "";
+        await refreshStats(payload.stats);
+        await updateExportCount();
+        showToast(summary);
+      } catch (error) {
+        showMessage(error.message, true);
+      } finally {
+        setImportBusy(false);
+      }
+    });
+
+    els.exportForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const statuses = [...document.querySelectorAll('input[name="exportStatus"]:checked')].map(
+        (input) => input.value
+      );
+      if (!statuses.length) {
+        showToast("至少选择一个导出状态。", true);
+        return;
+      }
+
+      const params = new URLSearchParams();
+      params.set("statuses", statuses.join(","));
+      params.set("include_weight", els.includeWeight.checked ? "1" : "0");
+      params.set("name", els.exportName.value.trim() || "rime_word_marker_export");
+      window.location.href = `/api/export?${params.toString()}`;
+    });
+
+    document.querySelectorAll('input[name="exportStatus"]').forEach((input) => {
+      input.addEventListener("change", () => {
+        void updateExportCount();
+      });
+    });
+  }
+
+  if (els.manageFilterForm) {
+    els.manageFilterForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      state.manage.page = 1;
+      state.manage.query = els.manageQuery.value.trim();
+      state.manage.status = els.manageStatus.value;
+      state.manage.pageSize = Number(els.managePageSize.value);
+      await loadManageEntries();
+    });
+
+    els.pagePrev.addEventListener("click", async () => {
+      if (state.manage.page <= 1) return;
+      state.manage.page -= 1;
+      await loadManageEntries();
+    });
+
+    els.pageNext.addEventListener("click", async () => {
+      if (state.manage.page >= state.manage.totalPages) return;
+      state.manage.page += 1;
+      await loadManageEntries();
+    });
+
+    els.pageJumpForm?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      await jumpToManagePage();
+    });
+
+    els.selectPageButton.addEventListener("click", () => {
+      state.manage.currentItems.forEach((item) => state.manage.selectedIds.add(item.id));
+      updateSelectedCount();
+      renderEntryList(state.manage.currentItems);
+    });
+
+    els.clearSelectionButton.addEventListener("click", () => {
+      state.manage.selectedIds.clear();
+      updateSelectedCount();
+      renderEntryList(state.manage.currentItems);
+    });
+
+    els.bulkAcceptButton.addEventListener("click", async () => {
+      await applyBulkStatus("accepted");
+    });
+    els.bulkPendingButton.addEventListener("click", async () => {
+      await applyBulkStatus("pending");
+    });
+    els.bulkRejectButton.addEventListener("click", async () => {
+      await applyBulkStatus("rejected");
+    });
+    els.openBulkEditButton.addEventListener("click", openBulkEditDialog);
+
+    els.entryList.addEventListener("click", async (event) => {
+      const editButton = event.target.closest("[data-edit-entry-id]");
+      if (editButton) {
+        await openEditDialog(Number(editButton.dataset.editEntryId));
+        return;
+      }
+
+      const button = event.target.closest("[data-entry-id][data-status]");
+      if (!button) return;
+
+      try {
+        const payload = await postJSON(`/api/entries/${button.dataset.entryId}/status`, {
+          status: button.dataset.status,
+        });
+        syncEntryAcrossViews(payload.entry);
+        await refreshStats(payload.stats);
+        await loadManageEntries();
+        showToast(`词条已标记为${STATUS_LABELS[button.dataset.status]}。`);
+      } catch (error) {
+        showToast(error.message, true);
+      }
+    });
+
+    els.entryList.addEventListener("change", (event) => {
+      const checkbox = event.target.closest("[data-select-entry-id]");
+      if (!checkbox) return;
+
+      const entryId = Number(checkbox.dataset.selectEntryId);
+      if (checkbox.checked) {
+        state.manage.selectedIds.add(entryId);
+      } else {
+        state.manage.selectedIds.delete(entryId);
+      }
+
+      updateSelectedCount();
+      renderEntryList(state.manage.currentItems);
+    });
+
+    bindDialogEvents(els.entryEditDialog, closeEditDialog);
+    els.entryEditCloseButton.addEventListener("click", closeEditDialog);
+    els.entryEditForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      await saveEditForm();
+    });
+    els.editAutoPinyinButton.addEventListener("click", async () => {
+      await fillEditPinyinFromPhrase();
+    });
+    els.editClearLabeledAtButton.addEventListener("click", () => {
+      state.edit.forceClearLabeledAt = true;
+      els.editLabeledAt.value = "";
+    });
+    els.editLabeledAt.addEventListener("input", () => {
+      state.edit.forceClearLabeledAt = false;
+    });
+
+    bindDialogEvents(els.bulkEditDialog, closeBulkEditDialog);
+    els.bulkEditCloseButton.addEventListener("click", closeBulkEditDialog);
+    els.bulkEditForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      await saveBulkEditForm();
+    });
+    [
+      els.bulkApplyStatus,
+      els.bulkApplyWeight,
+      els.bulkApplyImportedAt,
+      els.bulkApplyPinyin,
+      els.bulkApplyLabeledAt,
+      els.bulkRegeneratePinyin,
+      els.bulkClearLabeledAt,
+    ].forEach((checkbox) => {
+      checkbox.addEventListener("change", updateBulkFieldStates);
+    });
+  }
+}
+
+function bindDialogEvents(dialog, onClose) {
+  if (!dialog) return;
+  dialog.addEventListener("cancel", (event) => {
+    event.preventDefault();
+    onClose();
+  });
+  dialog.addEventListener("click", (event) => {
+    if (event.target === dialog) {
+      onClose();
+    }
+  });
+}
+
+function switchView(viewName) {
+  if (!viewName) return;
+  state.activeView = viewName;
+  document.querySelectorAll(".nav-chip").forEach((button) => {
+    button.classList.toggle("active", button.dataset.view === viewName);
+  });
+
+  document.querySelectorAll(".view").forEach((section) => {
+    section.classList.toggle("active", section.id === `view-${viewName}`);
+  });
+
+  if (viewName === "review") {
+    ensureReviewEntry();
+  } else if (viewName === "manage") {
+    loadManageEntries();
+  }
+}
+
+async function refreshStats(existingStats = null) {
+  if (!els.statTotal) return;
+  const stats = existingStats || (await fetchJSON("/api/stats"));
+  els.statTotal.textContent = stats.total ?? 0;
+  els.statPending.textContent = stats.pending ?? 0;
+  els.statAccepted.textContent = stats.accepted ?? 0;
+  els.statRejected.textContent = stats.rejected ?? 0;
+}
+
+async function ensureReviewEntry(forceAdvanceIfEmpty = false) {
+  if (!forceAdvanceIfEmpty && getCurrentReviewEntry()) {
+    state.review.canGoBack = state.review.pointer > 0;
+    paintReviewEntry(getCurrentReviewEntry());
+    return;
+  }
+
+  try {
+    const payload = await fetchJSON("/api/review/state");
+    applyServerCurrentPayload(payload, { resetLocalHistory: true, animate: false });
+    if (forceAdvanceIfEmpty && !payload.current_entry) {
+      await advanceReview("next", false);
+    }
+  } catch (error) {
+    renderReviewEmpty(error.message, false);
+  }
+}
+
+function getCurrentReviewEntry() {
+  if (state.review.pointer < 0) return null;
+  return state.review.timeline[state.review.pointer] || null;
+}
+
+async function advanceReview(direction = "next", animate = true) {
+  if (state.review.loading) return;
+  state.review.loading = true;
+  try {
+    const payload = await postJSON("/api/review/next", {});
+    applyServerCurrentPayload(payload, {
+      direction,
+      appendIfNew: true,
+      animate,
+    });
+  } catch (error) {
+    renderReviewEmpty(error.message, state.review.canGoBack);
+  } finally {
+    state.review.loading = false;
+  }
+}
+
+function jumpToReviewHistory(target) {
+  if (!state.review.timeline.length) return;
+
+  const latestIndex = state.review.timeline.length - 1;
+  let nextPointer = latestIndex;
+  let direction = "next";
+
+  if (target && target !== "latest") {
+    const [, rawIndex] = String(target).split(":");
+    const parsedIndex = Number(rawIndex);
+    if (!Number.isInteger(parsedIndex) || parsedIndex < 0 || parsedIndex > latestIndex) {
+      updateReviewHistorySelect();
+      return;
+    }
+    nextPointer = parsedIndex;
+    direction = parsedIndex < state.review.pointer ? "back" : "next";
+  }
+
+  state.review.pointer = nextPointer;
+  state.review.canGoBack = state.review.pointer > 0;
+  updateReviewHistorySelect();
+  if (els.reviewHistoryMenu) {
+    els.reviewHistoryMenu.removeAttribute("open");
+  }
+  renderReviewEntry(getCurrentReviewEntry(), direction);
+}
+
+function updateReviewHistorySelect() {
+  if (!els.reviewHistoryDropdown) return;
+
+  if (!state.review.timeline.length) {
+    els.reviewHistoryDropdown.innerHTML =
+      '<button class="history-option active" type="button" data-history-target="latest">最新待定词</button>';
+    if (els.reviewHistoryMenu) {
+      els.reviewHistoryMenu.classList.add("is-empty");
+    }
+    return;
+  }
+
+  const latestIndex = state.review.timeline.length - 1;
+  const latestEntry = state.review.timeline[latestIndex];
+  const currentTarget =
+    state.review.pointer < 0 || state.review.pointer >= latestIndex ? "latest" : `history:${state.review.pointer}`;
+  const options = [
+    renderHistoryOption(
+      "latest",
+      `最新待定词 · ${latestEntry.phrase}`,
+      latestEntry.status,
+      currentTarget === "latest"
+    ),
+  ];
+
+  for (let index = latestIndex - 1, offset = 1; index >= 0; index -= 1, offset += 1) {
+    const entry = state.review.timeline[index];
+    options.push(
+      renderHistoryOption(
+        `history:${index}`,
+        `${offset} 条前 · ${entry.phrase}`,
+        entry.status,
+        currentTarget === `history:${index}`
+      )
+    );
+  }
+
+  els.reviewHistoryDropdown.innerHTML = options.join("");
+  if (els.reviewHistoryMenu) {
+    els.reviewHistoryMenu.classList.remove("is-empty");
+  }
+}
+
+function renderHistoryOption(target, label, status, active = false) {
+  return `
+    <button class="history-option ${active ? "active" : ""}" type="button" data-history-target="${escapeHtml(target)}">
+      <span class="history-option-label">${escapeHtml(label)}</span>
+      <span class="history-option-status ${escapeHtml(status)}">${escapeHtml(STATUS_LABELS[status] || "待定")}</span>
+    </button>
+  `;
+}
+
+function applyServerCurrentPayload(
+  payload,
+  { direction = "next", resetLocalHistory = false, appendIfNew = false, animate = true } = {}
+) {
+  state.review.mode = payload.mode || "sequential";
+  storeReviewMode(state.review.mode);
+  updateReviewModeButtons();
+
+  if (payload.stats) {
+    void refreshStats(payload.stats);
+  }
+
+  if (resetLocalHistory) {
+    state.review.timeline = payload.current_entry ? [payload.current_entry] : [];
+    state.review.pointer = payload.current_entry ? 0 : -1;
+    state.review.canGoBack = false;
+  } else if (payload.current_entry) {
+    const current = getCurrentReviewEntry();
+    if (!current) {
+      state.review.timeline = [payload.current_entry];
+      state.review.pointer = 0;
+    } else if (appendIfNew && current.id !== payload.current_entry.id) {
+      if (state.review.pointer < state.review.timeline.length - 1) {
+        state.review.timeline = state.review.timeline.slice(0, state.review.pointer + 1);
+      }
+      state.review.timeline.push(payload.current_entry);
+      state.review.pointer = state.review.timeline.length - 1;
+    } else {
+      state.review.timeline[state.review.pointer] = payload.current_entry;
+    }
+    state.review.canGoBack = state.review.pointer > 0;
+  } else if (resetLocalHistory) {
+    state.review.timeline = [];
+    state.review.pointer = -1;
+    state.review.canGoBack = false;
+  }
+
+  updateReviewHistorySelect();
+
+  if (payload.current_entry) {
+    if (animate) {
+      renderReviewEntry(payload.current_entry, direction);
+    } else {
+      paintReviewEntry(payload.current_entry);
+    }
+  } else {
+    renderReviewEmpty("", state.review.canGoBack, animate);
+  }
+}
+
+function updateReviewModeButtons() {
+  if (!els.reviewModeButtons.length) return;
+  els.reviewModeButtons.forEach((button) => {
+    button.classList.toggle("active", button.dataset.reviewMode === state.review.mode);
+  });
+}
+
+async function setReviewMode(mode) {
+  if (!mode || mode === state.review.mode) return;
+  try {
+    const payload = await postJSON("/api/review/mode", { mode });
+    applyServerCurrentPayload(payload, { resetLocalHistory: true, animate: false });
+    if (!payload.current_entry) {
+      await advanceReview("next", false);
+    }
+    showToast(mode === "random" ? "已切换到随机模式。" : "已切换到顺序模式。");
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+async function labelCurrent(status) {
+  const current = getCurrentReviewEntry();
+  if (!current) {
+    showToast("当前没有待标注词条。", true);
+    return;
+  }
+
+  flashReviewCard(status);
+  const isReviewingHistory = state.review.pointer < state.review.timeline.length - 1;
+
+  try {
+    if (isReviewingHistory) {
+      const payload = await postJSON(`/api/entries/${current.id}/status`, { status });
+      syncEntryAcrossViews(payload.entry, { renderReview: false });
+      if (status !== "pending") {
+        state.review.timeline[state.review.pointer] = payload.entry;
+      }
+      state.review.pointer += 1;
+      state.review.canGoBack = state.review.pointer > 0;
+      updateReviewHistorySelect();
+      paintReviewEntry(getCurrentReviewEntry());
+      void refreshStats(payload.stats);
+      void loadManageEntries();
+      return;
+    }
+
+    const payload = await postJSON("/api/review/label", {
+      entry_id: current.id,
+      status,
+    });
+    syncEntryAcrossViews(payload.updated_entry, { renderReview: false });
+    applyLabelResponse(payload);
+    void loadManageEntries();
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+function renderReviewEntry(entry, direction = "next") {
+  animateReviewCard(direction);
+  paintReviewEntry(entry);
+}
+
+function paintReviewEntry(entry) {
+  if (!els.reviewCard) return;
+  els.reviewStatus.textContent = STATUS_LABELS[entry.status];
+  els.reviewStatus.className = `status-pill ${entry.status}`;
+  els.reviewWord.textContent = entry.phrase;
+  els.reviewPinyin.textContent = entry.pinyin || "暂无拼音";
+  els.reviewPinyinInput.value = entry.pinyin || "";
+  els.reviewPinyinInput.disabled = false;
+  els.reviewAutoPinyinButton.disabled = false;
+  els.reviewSavePinyinButton.disabled = false;
+  els.reviewWeight.textContent = `词频 ${entry.weight}`;
+  els.reviewImportedAt.textContent = `导入 ${formatDate(entry.imported_at)}`;
+  els.reviewLabeledAt.textContent = `标注 ${entry.labeled_at ? formatDate(entry.labeled_at) : "未标注"}`;
+  updateReviewHistorySelect();
+}
+
+function renderReviewEmpty(message = "", canGoBack = false, animate = true) {
+  if (!els.reviewCard) return;
+  if (animate) {
+    animateReviewCard("next");
+  }
+  els.reviewStatus.textContent = "待定";
+  els.reviewStatus.className = "status-pill pending";
+  els.reviewWord.textContent = "当前没有待定词条";
+  els.reviewPinyin.textContent = message || "可以去导入更多词库，或回到上一个已标注词条继续调整。";
+  els.reviewPinyinInput.value = "";
+  els.reviewPinyinInput.disabled = true;
+  els.reviewAutoPinyinButton.disabled = true;
+  els.reviewSavePinyinButton.disabled = true;
+  els.reviewWeight.textContent = "词频 -";
+  els.reviewImportedAt.textContent = "导入时间 -";
+  els.reviewLabeledAt.textContent = "标注时间 -";
+  updateReviewHistorySelect();
+}
+
+function animateReviewCard(direction) {
+  if (!els.reviewCard) return;
+  els.reviewCard.classList.remove("slide-next", "slide-back");
+  void els.reviewCard.offsetWidth;
+  els.reviewCard.classList.add(direction === "back" ? "slide-back" : "slide-next");
+}
+
+function flashReviewCard(status) {
+  if (!els.reviewCard) return;
+  els.reviewCard.classList.remove("flash-accepted", "flash-pending", "flash-rejected");
+  els.reviewCard.classList.add(`flash-${status}`);
+  window.setTimeout(() => {
+    els.reviewCard.classList.remove(`flash-${status}`);
+  }, 320);
+}
+
+async function loadManageEntries() {
+  if (!els.entryList) return;
+  try {
+    const params = new URLSearchParams({
+      page: String(state.manage.page),
+      page_size: String(state.manage.pageSize),
+      status: state.manage.status,
+      q: state.manage.query,
+    });
+
+    const payload = await fetchJSON(`/api/entries?${params.toString()}`);
+    state.manage.currentItems = payload.items;
+    state.manage.totalPages = payload.total_pages;
+    state.manage.page = payload.page;
+    renderEntryList(payload.items);
+    updateSelectedCount();
+    els.pageInfo.textContent = `第 ${payload.page} / ${payload.total_pages} 页，共 ${payload.total} 条`;
+    els.pagePrev.disabled = payload.page <= 1;
+    els.pageNext.disabled = payload.page >= payload.total_pages;
+    if (els.pageJumpInput) {
+      els.pageJumpInput.max = String(payload.total_pages);
+      els.pageJumpInput.value = String(payload.page);
+    }
+  } catch (error) {
+    els.entryList.innerHTML = `
+      <div class="table-empty">
+        <strong>加载失败</strong>
+        <span>${escapeHtml(error.message)}</span>
+      </div>
+    `;
+  }
+}
+
+async function jumpToManagePage() {
+  if (!els.pageJumpInput) return;
+  const nextPage = Number(els.pageJumpInput.value);
+  if (!Number.isInteger(nextPage)) {
+    showToast("请输入合法页码。", true);
+    return;
+  }
+
+  state.manage.page = Math.min(Math.max(nextPage, 1), state.manage.totalPages);
+  await loadManageEntries();
+}
+
+function renderEntryList(items) {
+  if (!items.length) {
+    els.entryList.innerHTML =
+      '<div class="table-empty"><strong>没有匹配词条</strong><span>调整搜索条件后再试试。</span></div>';
+    return;
+  }
+
+  els.entryList.innerHTML = `
+    <table class="entry-table">
+      <thead>
+        <tr>
+          <th class="col-select">选择</th>
+          <th class="col-id">ID</th>
+          <th class="col-phrase">词条</th>
+          <th class="col-pinyin">拼音</th>
+          <th class="col-weight">词频</th>
+          <th class="col-status">状态</th>
+          <th class="col-time">导入时间</th>
+          <th class="col-time">标注时间</th>
+          <th class="col-actions">操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${items.map(renderEntryRow).join("")}
+      </tbody>
+    </table>
+  `;
+}
+
+function renderEntryRow(entry) {
+  const selected = state.manage.selectedIds.has(entry.id);
+  return `
+    <tr class="${selected ? "is-selected" : ""}">
+      <td class="col-select">
+        <label class="entry-select">
+          <input type="checkbox" data-select-entry-id="${entry.id}" ${selected ? "checked" : ""} />
+        </label>
+      </td>
+      <td class="col-id">${entry.id}</td>
+      <td class="col-phrase">
+        <div class="table-phrase">${escapeHtml(entry.phrase)}</div>
+      </td>
+      <td class="col-pinyin">
+        <div class="table-pinyin">${escapeHtml(entry.pinyin)}</div>
+      </td>
+      <td class="col-weight">${entry.weight}</td>
+      <td class="col-status">
+        <span class="status-pill ${entry.status} compact">${STATUS_LABELS[entry.status]}</span>
+      </td>
+      <td class="col-time">${escapeHtml(formatDate(entry.imported_at))}</td>
+      <td class="col-time">${escapeHtml(entry.labeled_at ? formatDate(entry.labeled_at) : "未标注")}</td>
+      <td class="col-actions">
+        <div class="table-actions">
+          <button class="ghost-button small-inline" data-edit-entry-id="${entry.id}">编辑</button>
+          ${renderManageButton(entry, "accepted")}
+          ${renderManageButton(entry, "pending")}
+          ${renderManageButton(entry, "rejected")}
+        </div>
+      </td>
+    </tr>
+  `;
+}
+
+function renderManageButton(entry, status) {
+  const activeClass = entry.status === status ? `active ${status}` : "";
+  return `
+    <button class="mini-button ${activeClass}" data-entry-id="${entry.id}" data-status="${status}">
+      ${STATUS_LABELS[status]}
+    </button>
+  `;
+}
+
+function updateSelectedCount() {
+  if (!els.selectedCount || !els.bulkTargetSummary) return;
+  const count = state.manage.selectedIds.size;
+  els.selectedCount.textContent = `已选择 ${count} 条`;
+  els.bulkTargetSummary.textContent = `将作用于 ${count} 条词条`;
+}
+
+function applyLabelResponse(payload) {
+  state.review.mode = payload.mode || state.review.mode;
+  storeReviewMode(state.review.mode);
+  updateReviewModeButtons();
+  if (payload.stats) {
+    void refreshStats(payload.stats);
+  }
+
+  if (!payload.current_entry) {
+    renderReviewEmpty("", state.review.pointer > 0);
+    return;
+  }
+
+  const current = getCurrentReviewEntry();
+  if (!current) {
+    state.review.timeline = [payload.current_entry];
+    state.review.pointer = 0;
+  } else if (current.id !== payload.current_entry.id) {
+    state.review.timeline.push(payload.current_entry);
+    state.review.pointer = state.review.timeline.length - 1;
+  } else {
+    state.review.timeline[state.review.pointer] = payload.current_entry;
+  }
+  state.review.canGoBack = state.review.pointer > 0;
+  updateReviewHistorySelect();
+  renderReviewEntry(payload.current_entry, "next");
+}
+
+function getSelectedIds() {
+  return [...state.manage.selectedIds];
+}
+
+async function applyBulkStatus(status) {
+  const ids = getSelectedIds();
+  if (!ids.length) {
+    showToast("请先选择要处理的词条。", true);
+    return;
+  }
+
+  try {
+    const payload = await postJSON("/api/entries/bulk-update", {
+      ids,
+      updates: { status },
+    });
+    applyBulkResponse(payload, `已批量标记为${STATUS_LABELS[status]}。`);
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+function openBulkEditDialog() {
+  if (!state.manage.selectedIds.size) {
+    showToast("请先选择至少一条词条。", true);
+    return;
+  }
+
+  els.bulkEditForm.reset();
+  updateBulkFieldStates();
+  updateSelectedCount();
+  openDialog(els.bulkEditDialog);
+}
+
+function closeBulkEditDialog() {
+  closeDialog(els.bulkEditDialog);
+}
+
+function updateBulkFieldStates() {
+  els.bulkStatus.disabled = !els.bulkApplyStatus.checked;
+  els.bulkWeight.disabled = !els.bulkApplyWeight.checked;
+  els.bulkImportedAt.disabled = !els.bulkApplyImportedAt.checked;
+  els.bulkPinyin.disabled = !els.bulkApplyPinyin.checked || els.bulkRegeneratePinyin.checked;
+  els.bulkLabeledAt.disabled = !els.bulkApplyLabeledAt.checked || els.bulkClearLabeledAt.checked;
+}
+
+async function saveBulkEditForm() {
+  const ids = getSelectedIds();
+  if (!ids.length) {
+    showToast("请先选择至少一条词条。", true);
+    return;
+  }
+
+  const updates = {};
+  if (els.bulkApplyStatus.checked) {
+    updates.status = els.bulkStatus.value;
+  }
+  if (els.bulkApplyWeight.checked) {
+    updates.weight = els.bulkWeight.value.trim();
+  }
+  if (els.bulkApplyImportedAt.checked) {
+    updates.imported_at = fromDatetimeLocalValue(els.bulkImportedAt.value);
+  }
+  if (els.bulkApplyPinyin.checked) {
+    updates.pinyin = els.bulkPinyin.value.trim();
+  }
+  if (els.bulkApplyLabeledAt.checked) {
+    updates.labeled_at = fromDatetimeLocalValue(els.bulkLabeledAt.value);
+  }
+
+  try {
+    const payload = await postJSON("/api/entries/bulk-update", {
+      ids,
+      updates,
+      regenerate_pinyin: els.bulkRegeneratePinyin.checked,
+      clear_labeled_at: els.bulkClearLabeledAt.checked,
+    });
+    closeBulkEditDialog();
+    applyBulkResponse(payload, `已批量更新 ${payload.updated_count} 条词条。`);
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+async function applyBulkResponse(payload, message) {
+  payload.entries.forEach(syncEntryAcrossViews);
+  await refreshStats(payload.stats);
+  await loadManageEntries();
+  showToast(message);
+}
+
+async function saveCurrentReviewPinyin(useGeneratedPinyin) {
+  const current = getCurrentReviewEntry();
+  if (!current) {
+    showToast("当前没有可编辑的词条。", true);
+    return;
+  }
+
+  try {
+    let pinyin = els.reviewPinyinInput.value.trim();
+    if (useGeneratedPinyin || !pinyin) {
+      pinyin = await fetchGeneratedPinyin(current.phrase);
+      els.reviewPinyinInput.value = pinyin;
+    }
+
+    const payload = await postJSON(`/api/entries/${current.id}/update`, { pinyin });
+    syncEntryAcrossViews(payload.entry);
+    await refreshStats(payload.stats);
+    await loadManageEntries();
+    showToast("拼音已保存。");
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+async function fillReviewPinyinFromPhrase() {
+  const current = getCurrentReviewEntry();
+  if (!current) {
+    showToast("当前没有可编辑的词条。", true);
+    return;
+  }
+
+  try {
+    const pinyin = await fetchGeneratedPinyin(current.phrase);
+    els.reviewPinyinInput.value = pinyin;
+    showToast("已按当前词条自动生成拼音。");
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+async function openEditDialog(entryId) {
+  try {
+    const entry = await fetchJSON(`/api/entries/${entryId}`);
+    state.edit.entryId = entry.id;
+    state.edit.forceClearLabeledAt = false;
+    els.editEntryId.value = String(entry.id);
+    els.editPhrase.value = entry.phrase;
+    els.editPinyin.value = entry.pinyin || "";
+    els.editWeight.value = String(entry.weight);
+    els.editStatus.value = entry.status;
+    els.editImportedAt.value = toDatetimeLocalValue(entry.imported_at);
+    els.editLabeledAt.value = toDatetimeLocalValue(entry.labeled_at);
+    openDialog(els.entryEditDialog);
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+function closeEditDialog() {
+  state.edit.entryId = null;
+  state.edit.forceClearLabeledAt = false;
+  closeDialog(els.entryEditDialog);
+}
+
+async function fillEditPinyinFromPhrase() {
+  const phrase = els.editPhrase.value.trim();
+  if (!phrase) {
+    showToast("请先填写词条。", true);
+    return;
+  }
+
+  try {
+    els.editPinyin.value = await fetchGeneratedPinyin(phrase);
+    showToast("已根据词条自动生成拼音。");
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+async function saveEditForm() {
+  const entryId = Number(els.editEntryId.value);
+  if (!entryId) {
+    showToast("缺少词条 ID。", true);
+    return;
+  }
+
+  const payload = {
+    phrase: els.editPhrase.value.trim(),
+    pinyin: els.editPinyin.value.trim(),
+    weight: els.editWeight.value.trim(),
+    status: els.editStatus.value,
+    imported_at: fromDatetimeLocalValue(els.editImportedAt.value),
+  };
+
+  if (els.editLabeledAt.value) {
+    payload.labeled_at = fromDatetimeLocalValue(els.editLabeledAt.value);
+  } else if (state.edit.forceClearLabeledAt) {
+    payload.labeled_at = "";
+  }
+
+  try {
+    const response = await postJSON(`/api/entries/${entryId}/update`, payload);
+    syncEntryAcrossViews(response.entry);
+    await refreshStats(response.stats);
+    await loadManageEntries();
+    closeEditDialog();
+    showToast("词条信息已更新。");
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+function syncEntryAcrossViews(entry, options = {}) {
+  const { renderReview = true, animate = false } = options;
+  state.review.timeline = state.review.timeline.map((item) => (item.id === entry.id ? entry : item));
+  state.manage.currentItems = state.manage.currentItems.map((item) => (item.id === entry.id ? entry : item));
+  updateReviewHistorySelect();
+
+  const current = getCurrentReviewEntry();
+  if (renderReview && current && current.id === entry.id) {
+    if (animate) {
+      renderReviewEntry(entry);
+    } else {
+      paintReviewEntry(entry);
+    }
+  }
+}
+
+function getSelectedExportStatuses() {
+  return [...document.querySelectorAll('input[name="exportStatus"]:checked')].map((input) => input.value);
+}
+
+async function updateExportCount() {
+  if (!els.exportCountNote) return;
+
+  const statuses = getSelectedExportStatuses();
+  if (!statuses.length) {
+    els.exportCountNote.textContent = "请至少选择一个导出状态。";
+    return;
+  }
+
+  try {
+    const params = new URLSearchParams({ statuses: statuses.join(",") });
+    const payload = await fetchJSON(`/api/export/count?${params.toString()}`);
+    els.exportCountNote.textContent = `当前选择将导出 ${payload.count} 条词条。`;
+  } catch (error) {
+    els.exportCountNote.textContent = `无法计算导出数量：${error.message}`;
+  }
+}
+
+function setImportBusy(isBusy, detail = "") {
+  if (!els.importLoadingOverlay) return;
+
+  els.importLoadingOverlay.hidden = !isBusy;
+  if (els.importLoadingText) {
+    els.importLoadingText.textContent = isBusy
+      ? `${detail}，请稍候。导入完成前请不要重复点击或切换操作。`
+      : "正在处理词库，请稍候。导入完成前请不要重复点击或切换操作。";
+  }
+
+  if (els.importForm) {
+    els.importForm.querySelectorAll("input, textarea, button").forEach((element) => {
+      element.disabled = isBusy;
+    });
+  }
+  if (els.exportForm) {
+    els.exportForm.querySelectorAll("input, button").forEach((element) => {
+      element.disabled = isBusy;
+    });
+  }
+}
+
+
+async function fetchGeneratedPinyin(phrase) {
+  const params = new URLSearchParams({ phrase });
+  const payload = await fetchJSON(`/api/pinyin?${params.toString()}`);
+  return payload.pinyin;
+}
+
+function openDialog(dialog) {
+  if (!dialog) return;
+  if (typeof dialog.showModal === "function") {
+    dialog.showModal();
+  } else {
+    dialog.setAttribute("open", "open");
+  }
+}
+
+function closeDialog(dialog) {
+  if (!dialog) return;
+  if (typeof dialog.close === "function") {
+    dialog.close();
+  } else {
+    dialog.removeAttribute("open");
+  }
+}
+
+function showMessage(message, isError = false) {
+  if (!els.importMessage) {
+    showToast(message, isError);
+    return;
+  }
+  els.importMessage.textContent = message;
+  els.importMessage.classList.add("show");
+  els.importMessage.style.background = isError ? "rgba(188, 63, 50, 0.12)" : "rgba(13, 103, 114, 0.09)";
+  els.importMessage.style.color = isError ? "#bc3f32" : "#0d6772";
+}
+
+function showToast(message, isError = false) {
+  if (!els.toast) return;
+  els.toast.textContent = message;
+  els.toast.style.background = isError ? "rgba(137, 27, 27, 0.92)" : "rgba(16, 47, 51, 0.92)";
+  els.toast.classList.add("show");
+  window.clearTimeout(showToast.timer);
+  showToast.timer = window.setTimeout(() => {
+    els.toast.classList.remove("show");
+  }, Math.max(2200, Math.min(5200, 1800 + message.length * 32)));
+}
+
+async function fetchJSON(url) {
+  const response = await fetch(url, {
+    headers: {
+      "X-Review-Session": getReviewSessionKey(),
+    },
+  });
+  const payload = await response.json();
+  if (!response.ok) {
+    throw new Error(payload.error || "请求失败。");
+  }
+  return payload;
+}
+
+async function postJSON(url, body) {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Review-Session": getReviewSessionKey(),
+    },
+    body: JSON.stringify(body),
+  });
+
+  const payload = await response.json();
+  if (!response.ok) {
+    throw new Error(payload.error || "请求失败。");
+  }
+  return payload;
+}
+
+async function postRawText(url, body) {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "text/plain; charset=utf-8",
+      "X-Review-Session": getReviewSessionKey(),
+    },
+    body,
+  });
+
+  const payload = await response.json();
+  if (!response.ok) {
+    throw new Error(payload.error || "请求失败。");
+  }
+  return payload;
+}
+
+function formatDate(rawValue) {
+  if (!rawValue) return "-";
+  const date = new Date(rawValue);
+  if (Number.isNaN(date.getTime())) return rawValue;
+  return date.toLocaleString("zh-CN", { hour12: false });
+}
+
+function toDatetimeLocalValue(rawValue) {
+  if (!rawValue) return "";
+  const date = new Date(rawValue);
+  if (Number.isNaN(date.getTime())) {
+    return String(rawValue).slice(0, 16);
+  }
+
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  const hour = String(date.getHours()).padStart(2, "0");
+  const minute = String(date.getMinutes()).padStart(2, "0");
+  return `${year}-${month}-${day}T${hour}:${minute}`;
+}
+
+function fromDatetimeLocalValue(rawValue) {
+  if (!rawValue) return "";
+  return `${rawValue}:00`;
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
