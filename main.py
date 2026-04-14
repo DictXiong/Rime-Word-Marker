@@ -3,11 +3,25 @@ from __future__ import annotations
 import argparse
 import json
 import re
+from datetime import datetime
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from app.ai import (
+    AIAnnotationWorker,
+    AIConfig,
+    DEFAULT_AI_BATCH_SIZE,
+    DEFAULT_AI_CANDIDATE_MODE,
+    DEFAULT_AI_EXAMPLES_PER_CLASS,
+    DEFAULT_AI_MAX_TOKENS,
+    DEFAULT_AI_TIMEOUT,
+    MAX_AI_BATCH_SIZE,
+    MAX_AI_MAX_TOKENS,
+    VALID_AI_CANDIDATE_MODES,
+    estimate_ai_max_tokens,
+)
 from app.service import DEFAULT_REVIEW_SESSION, WordService
 from app.pinyin_utils import transliterate_phrase
 
@@ -17,6 +31,8 @@ DATA_DIR = BASE_DIR / "data"
 DEFAULT_DB_PATH = DATA_DIR / "words.db"
 DEFAULT_CONFIG_PATH = BASE_DIR / "config.json"
 SERVICE: WordService | None = None
+AI_WORKER: AIAnnotationWorker | None = None
+VERBOSE = False
 PAGE_ROUTES = {
     "/": "/index.html",
     "/review": "/review.html",
@@ -63,6 +79,10 @@ class AppHandler(SimpleHTTPRequestHandler):
                 self._send_json(200, _service().get_stats())
                 return
 
+            if parsed.path == "/api/ai/overview":
+                self._send_json(200, _service().get_ai_overview(**_ai_overview_context()))
+                return
+
             if parsed.path == "/api/pinyin":
                 query = parse_qs(parsed.query)
                 phrase = query.get("phrase", [""])[0].strip()
@@ -88,7 +108,11 @@ class AppHandler(SimpleHTTPRequestHandler):
                 return
 
             if parsed.path == "/api/review/next":
-                review_state = _service().advance_review(self._review_session_key())
+                query = parse_qs(parsed.query)
+                review_state = _service().advance_review(
+                    self._review_session_key(),
+                    prefer_ai=_load_bool(query.get("prefer_ai", ["0"])[0], False),
+                )
                 self._send_json(200, {**review_state, "stats": _service().get_stats()})
                 return
 
@@ -97,11 +121,13 @@ class AppHandler(SimpleHTTPRequestHandler):
                 page = _to_int(query.get("page", ["1"])[0], default=1)
                 page_size = _to_int(query.get("page_size", ["30"])[0], default=30)
                 status = query.get("status", ["all"])[0]
+                ai_status = query.get("ai_status", ["all"])[0]
                 keyword = query.get("q", [""])[0]
                 payload = _service().list_entries(
                     page=page,
                     page_size=page_size,
                     status=status,
+                    ai_status=ai_status,
                     query=keyword,
                 )
                 self._send_json(200, payload)
@@ -115,7 +141,10 @@ class AppHandler(SimpleHTTPRequestHandler):
                     statuses.extend(item for item in value.split(",") if item)
 
                 include_weight = query.get("include_weight", ["0"])[0] == "1"
-                dictionary_name = query.get("name", ["rime_word_marker_export"])[0]
+                include_ai_assist = query.get("include_ai_assist", ["0"])[0] == "1"
+                dictionary_name = WordService.normalize_export_dictionary_name(
+                    query.get("name", ["rime_word_marker_export"])[0]
+                )
                 filename = f"{dictionary_name}.dict.yaml"
                 self.send_response(200)
                 self.send_header("Content-Type", "application/x-yaml; charset=utf-8")
@@ -127,6 +156,7 @@ class AppHandler(SimpleHTTPRequestHandler):
                 for line in _service().iter_export_dictionary_lines(
                     statuses=statuses,
                     include_weight=include_weight,
+                    include_ai_assist=include_ai_assist,
                     dictionary_name=dictionary_name,
                 ):
                     self.wfile.write(line.encode("utf-8"))
@@ -138,7 +168,16 @@ class AppHandler(SimpleHTTPRequestHandler):
                 statuses = []
                 for value in raw_statuses:
                     statuses.extend(item for item in value.split(",") if item)
-                self._send_json(200, {"count": _service().count_export_entries(statuses=statuses)})
+                include_ai_assist = query.get("include_ai_assist", ["0"])[0] == "1"
+                self._send_json(
+                    200,
+                    {
+                        "count": _service().count_export_entries(
+                            statuses=statuses,
+                            include_ai_assist=include_ai_assist,
+                        )
+                    },
+                )
                 return
 
             match = ENTRY_DETAIL_RE.match(parsed.path)
@@ -154,6 +193,7 @@ class AppHandler(SimpleHTTPRequestHandler):
         except ValueError as exc:
             self._send_json(400, {"error": str(exc)})
         except Exception as exc:  # pragma: no cover - defensive server path
+            _log(f"[server] GET {parsed.path} failed {type(exc).__name__}: {exc}")
             self._send_json(500, {"error": f"服务器异常：{exc}"})
 
     def _handle_api_post(self, parsed) -> None:
@@ -168,6 +208,10 @@ class AppHandler(SimpleHTTPRequestHandler):
                 except UnicodeDecodeError as exc:
                     raise ValueError("导入文件不是合法的 UTF-8 文本。") from exc
                 result = _service().import_text(text)
+                _verbose_log_json(
+                    "import-file",
+                    {"bytes": len(raw_body), "chars": len(text), "result": result},
+                )
                 self._send_json(200, {"result": result, "stats": _service().get_stats()})
                 return
 
@@ -179,11 +223,18 @@ class AppHandler(SimpleHTTPRequestHandler):
                     self._send_json(400, {"error": "导入内容不能为空。"})
                     return
                 result = _service().import_text(text)
+                _verbose_log_json(
+                    "import-text",
+                    {"chars": len(text), "result": result},
+                )
                 self._send_json(200, {"result": result, "stats": _service().get_stats()})
                 return
 
             if parsed.path == "/api/review/next":
-                review_state = _service().advance_review(self._review_session_key())
+                review_state = _service().advance_review(
+                    self._review_session_key(),
+                    prefer_ai=bool(payload.get("prefer_ai")),
+                )
                 self._send_json(200, {**review_state, "stats": _service().get_stats()})
                 return
 
@@ -197,16 +248,50 @@ class AppHandler(SimpleHTTPRequestHandler):
                     payload.get("mode", ""),
                     self._review_session_key(),
                 )
+                _verbose_log_json(
+                    "review-mode-updated",
+                    {"session": self._review_session_key(), "mode": review_state.get("mode")},
+                )
                 self._send_json(200, {**review_state, "stats": _service().get_stats()})
                 return
 
             if parsed.path == "/api/review/label":
+                entry_id = int(payload.get("entry_id", 0))
+                status = payload.get("status", "")
                 review_state = _service().label_and_advance(
-                    int(payload.get("entry_id", 0)),
-                    payload.get("status", ""),
+                    entry_id,
+                    status,
                     self._review_session_key(),
+                    prefer_ai=bool(payload.get("prefer_ai")),
+                )
+                _verbose_log_json(
+                    "review-label-updated",
+                    {
+                        "session": self._review_session_key(),
+                        "entry_id": entry_id,
+                        "status": status,
+                        "updated_entry": _compact_entry(review_state.get("updated_entry")),
+                        "next_entry": _compact_entry(review_state.get("current_entry")),
+                    },
                 )
                 self._send_json(200, {**review_state, "stats": _service().get_stats()})
+                return
+
+            if parsed.path == "/api/ai/toggle":
+                overview_context = _ai_overview_context()
+                overview, message = _service().set_ai_enabled(
+                    bool(payload.get("enabled")),
+                    configured=overview_context.get("configured", False),
+                    model_name=overview_context.get("model_name"),
+                    prompt_version=overview_context.get("prompt_version"),
+                )
+                if _ai_worker():
+                    _ai_worker().wake()
+                _verbose_log_json(
+                    "ai-toggle-updated",
+                    {"enabled": bool(payload.get("enabled")), "message": message, "overview": overview},
+                )
+                self._send_json(200, {"overview": overview, "message": message})
                 return
 
             if parsed.path == "/api/entries/bulk-update":
@@ -216,23 +301,44 @@ class AppHandler(SimpleHTTPRequestHandler):
                     regenerate_pinyin=bool(payload.get("regenerate_pinyin")),
                     clear_labeled_at=bool(payload.get("clear_labeled_at")),
                 )
+                _verbose_log_json(
+                    "entries-bulk-updated",
+                    {
+                        "ids": payload.get("ids", []),
+                        "updates": payload.get("updates", {}),
+                        "regenerate_pinyin": bool(payload.get("regenerate_pinyin")),
+                        "clear_labeled_at": bool(payload.get("clear_labeled_at")),
+                        "updated_count": result.get("updated_count"),
+                    },
+                )
                 self._send_json(200, {**result, "stats": _service().get_stats()})
                 return
 
             match = ENTRY_STATUS_RE.match(parsed.path)
             if match:
+                entry_id = int(match.group(1))
+                status = payload.get("status", "")
                 entry = _service().update_status(
-                    int(match.group(1)),
-                    payload.get("status", ""),
+                    entry_id,
+                    status,
+                )
+                _verbose_log_json(
+                    "entry-status-updated",
+                    {"entry_id": entry_id, "status": status, "entry": _compact_entry(entry)},
                 )
                 self._send_json(200, {"entry": entry, "stats": _service().get_stats()})
                 return
 
             match = ENTRY_UPDATE_RE.match(parsed.path)
             if match:
+                entry_id = int(match.group(1))
                 entry = _service().update_entry(
-                    int(match.group(1)),
+                    entry_id,
                     payload,
+                )
+                _verbose_log_json(
+                    "entry-updated",
+                    {"entry_id": entry_id, "updates": payload, "entry": _compact_entry(entry)},
                 )
                 self._send_json(200, {"entry": entry, "stats": _service().get_stats()})
                 return
@@ -245,6 +351,7 @@ class AppHandler(SimpleHTTPRequestHandler):
         except ValueError as exc:
             self._send_json(400, {"error": str(exc)})
         except Exception as exc:  # pragma: no cover - defensive server path
+            _log(f"[server] POST {parsed.path} failed {type(exc).__name__}: {exc}")
             self._send_json(500, {"error": f"服务器异常：{exc}"})
 
     def _read_json_body(self) -> dict:
@@ -288,6 +395,51 @@ def _service() -> WordService:
     return SERVICE
 
 
+def _ai_worker() -> AIAnnotationWorker | None:
+    return AI_WORKER
+
+
+def _ai_overview_context() -> dict:
+    worker = _ai_worker()
+    if worker is None:
+        return {}
+    descriptor = worker.describe()
+    return {
+        "configured": descriptor["configured"],
+        "model_name": descriptor["model"],
+        "prompt_version": descriptor["prompt_version"],
+    }
+
+
+def _verbose_log_json(title: str, payload: dict) -> None:
+    if not VERBOSE:
+        return
+    print(f"[{_log_timestamp()}] [verbose] {title}:", flush=True)
+    print(json.dumps(payload, ensure_ascii=False, indent=2), flush=True)
+
+
+def _log(message: str) -> None:
+    print(f"[{_log_timestamp()}] {message}", flush=True)
+
+
+def _log_timestamp() -> str:
+    return datetime.now().isoformat(timespec="seconds")
+
+
+def _compact_entry(entry) -> dict | None:
+    if not isinstance(entry, dict):
+        return None
+    return {
+        "id": entry.get("id"),
+        "phrase": entry.get("phrase"),
+        "status": entry.get("status"),
+        "pinyin": entry.get("pinyin"),
+        "ai_label": entry.get("ai_label"),
+        "ai_score": entry.get("ai_score"),
+        "ai_prompt_version": entry.get("ai_prompt_version"),
+    }
+
+
 def _load_config(config_path: Path) -> dict:
     if not config_path.exists():
         return {}
@@ -309,12 +461,81 @@ def _resolve_path(raw_path: str | None, base_dir: Path) -> Path | None:
     return path
 
 
+def _load_bool(raw_value, default: bool = False) -> bool:
+    if raw_value is None:
+        return default
+    if isinstance(raw_value, bool):
+        return raw_value
+    if isinstance(raw_value, (int, float)):
+        return bool(raw_value)
+    if isinstance(raw_value, str):
+        normalized = raw_value.strip().lower()
+        if normalized in {"1", "true", "yes", "y", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "n", "off"}:
+            return False
+    return default
+
+
+def _load_ai_config(config: dict, verbose: bool = False) -> AIConfig:
+    raw_ai = config.get("ai", {})
+    if not isinstance(raw_ai, dict):
+        raw_ai = {}
+
+    endpoint = str(raw_ai.get("endpoint", raw_ai.get("base_url", ""))).strip()
+    api_key = str(raw_ai.get("api_key", "")).strip()
+    model = str(raw_ai.get("model", "")).strip()
+    timeout = max(5, int(raw_ai.get("timeout", DEFAULT_AI_TIMEOUT) or DEFAULT_AI_TIMEOUT))
+    batch_size = max(
+        1,
+        min(
+            MAX_AI_BATCH_SIZE,
+            int(raw_ai.get("batch_size", DEFAULT_AI_BATCH_SIZE) or DEFAULT_AI_BATCH_SIZE),
+        ),
+    )
+    examples_per_class = max(
+        1,
+        min(
+            1024,
+            int(
+                raw_ai.get("examples_per_class", DEFAULT_AI_EXAMPLES_PER_CLASS)
+                or DEFAULT_AI_EXAMPLES_PER_CLASS
+            ),
+        ),
+    )
+    raw_max_tokens = raw_ai.get("max_tokens")
+    if raw_max_tokens is None or (
+        isinstance(raw_max_tokens, str) and not raw_max_tokens.strip()
+    ):
+        max_tokens = estimate_ai_max_tokens(batch_size)
+    else:
+        max_tokens = max(
+            DEFAULT_AI_MAX_TOKENS,
+            min(MAX_AI_MAX_TOKENS, int(raw_max_tokens)),
+        )
+    candidate_mode = str(raw_ai.get("candidate_mode", DEFAULT_AI_CANDIDATE_MODE)).strip()
+    if candidate_mode not in VALID_AI_CANDIDATE_MODES:
+        candidate_mode = DEFAULT_AI_CANDIDATE_MODE
+    return AIConfig(
+        endpoint=endpoint,
+        api_key=api_key,
+        model=model,
+        timeout=timeout,
+        batch_size=batch_size,
+        examples_per_class=examples_per_class,
+        max_tokens=max_tokens,
+        candidate_mode=candidate_mode,
+        verbose=verbose,
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the Rime Word Marker web app.")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--db-path", help="SQLite 数据库文件路径。")
     parser.add_argument("--config", default=str(DEFAULT_CONFIG_PATH), help="配置文件路径（JSON）。")
+    parser.add_argument("--verbose", action="store_true", help="打印详细调试日志。")
     args = parser.parse_args()
 
     config_path = _resolve_path(args.config, BASE_DIR) or DEFAULT_CONFIG_PATH
@@ -324,6 +545,8 @@ def main() -> None:
     host = str(config.get("host", args.host))
     port = int(config.get("port", args.port))
     db_path = _resolve_path(config.get("db_path"), config_base_dir) or DEFAULT_DB_PATH
+    verbose = _load_bool(config.get("verbose"), False) or args.verbose
+    ai_config = _load_ai_config(config, verbose=verbose)
 
     if args.host != parser.get_default("host"):
         host = args.host
@@ -332,14 +555,26 @@ def main() -> None:
     if args.db_path:
         db_path = _resolve_path(args.db_path, BASE_DIR) or DEFAULT_DB_PATH
 
-    global SERVICE
+    global SERVICE, AI_WORKER, VERBOSE
+    VERBOSE = verbose
     SERVICE = WordService(db_path)
+    AI_WORKER = AIAnnotationWorker(SERVICE, ai_config)
+    AI_WORKER.start()
 
     handler = partial(AppHandler, directory=str(STATIC_DIR))
-    with ThreadingHTTPServer((host, port), handler) as httpd:
-        print(f"Rime Word Marker running at http://{host}:{port}")
-        print(f"Using database: {db_path}")
-        httpd.serve_forever()
+    try:
+        with ThreadingHTTPServer((host, port), handler) as httpd:
+            _log(f"Rime Word Marker running at http://{host}:{port}")
+            _log(f"Using database: {db_path}")
+            _log(f"Verbose logging: {'on' if verbose else 'off'}")
+            if ai_config.is_configured():
+                _log(f"AI annotation ready: {ai_config.model} @ {ai_config.request_url}")
+            else:
+                _log("AI annotation disabled: AI endpoint/model not configured")
+            httpd.serve_forever()
+    finally:
+        if AI_WORKER is not None:
+            AI_WORKER.stop()
 
 
 if __name__ == "__main__":

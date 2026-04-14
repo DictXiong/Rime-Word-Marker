@@ -17,6 +17,7 @@
   --radius-xl: 30px;
   --radius-lg: 22px;
   --radius-md: 16px;
+  --kai-font: "Kaiti SC", "STKaiti", "KaiTi", "BiauKai", "Songti SC", serif;
 }
 
 * {
@@ -100,7 +101,7 @@ body {
 .hero h1 {
   max-width: none;
   font-size: clamp(2.5rem, 6vw, 5rem);
-  font-family: "Iowan Old Style", "Palatino Linotype", "STKaiti", serif;
+  font-family: var(--kai-font);
 }
 
 .hero-copy {
@@ -472,6 +473,14 @@ textarea {
   filter: blur(6px);
 }
 
+.review-status-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 22px;
+}
+
 .status-pill {
   display: inline-flex;
   align-items: center;
@@ -480,7 +489,6 @@ textarea {
   padding: 8px 14px;
   font-size: 0.9rem;
   font-weight: 700;
-  margin-bottom: 22px;
 }
 
 .status-pill.pending {
@@ -498,12 +506,33 @@ textarea {
   color: var(--reject);
 }
 
+.status-pill.ai {
+  border: 1px solid rgba(29, 29, 29, 0.08);
+  background: rgba(255, 255, 255, 0.8);
+}
+
+.status-pill.ai.pending {
+  background: rgba(230, 214, 186, 0.3);
+}
+
+.status-pill.ai.accepted {
+  background: rgba(212, 236, 221, 0.72);
+}
+
+.status-pill.ai.rejected {
+  background: rgba(245, 220, 217, 0.72);
+}
+
+.status-pill.ai.unknown {
+  color: var(--muted);
+}
+
 .review-word {
   font-size: clamp(3rem, 11vw, 7rem);
   line-height: 1.04;
   font-weight: 800;
-  font-family: "Iowan Old Style", "Palatino Linotype", "STKaiti", serif;
-  letter-spacing: -0.03em;
+  font-family: var(--kai-font);
+  letter-spacing: 0;
   word-break: break-word;
 }
 
@@ -561,6 +590,38 @@ textarea {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 14px;
   margin-top: 18px;
+}
+
+.decision-button.ai-agree-button {
+  width: 100%;
+  margin-top: 14px;
+  min-height: 82px;
+  padding: 18px 20px;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  font-size: 1.2rem;
+  color: #fff;
+  font-weight: 800;
+  box-shadow: 0 18px 32px rgba(0, 0, 0, 0.14);
+}
+
+.decision-button.ai-agree-button.ai-accept {
+  background: linear-gradient(135deg, #1a6d46, #2c985f);
+}
+
+.decision-button.ai-agree-button.ai-reject {
+  background: linear-gradient(135deg, #a2372d, #d95443);
+}
+
+.decision-button.ai-agree-button.ai-pending {
+  background: linear-gradient(135deg, #9a6815, #cf8a0d);
+}
+
+.decision-button.ai-agree-button:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+  box-shadow: none;
 }
 
 .decision-button,
@@ -639,6 +700,81 @@ textarea {
   flex-wrap: wrap;
   align-items: end;
   margin-bottom: 18px;
+}
+
+.panel-note {
+  margin: 6px 0 0;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.ai-panel {
+  margin-bottom: 18px;
+  padding: 20px 22px;
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.46);
+  border: 1px solid rgba(29, 29, 29, 0.08);
+}
+
+.ai-panel-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.ai-panel-head h3 {
+  margin: 0;
+}
+
+.switch-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.86);
+  border: 1px solid rgba(29, 29, 29, 0.08);
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.switch-field input {
+  width: auto;
+  margin: 0;
+}
+
+.ai-panel-grid {
+  margin-top: 16px;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.ai-panel-item {
+  display: grid;
+  gap: 6px;
+  padding: 14px 16px;
+  border-radius: 18px;
+  background: rgba(255, 250, 243, 0.72);
+  border: 1px solid rgba(29, 29, 29, 0.08);
+}
+
+.ai-panel-item span {
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.ai-panel-item strong {
+  font-size: 1rem;
+}
+
+.ai-panel-error {
+  margin: 14px 0 0;
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: rgba(188, 63, 50, 0.1);
+  color: #9d3228;
 }
 
 .bulk-panel {
@@ -877,7 +1013,7 @@ input[type="radio"] {
 
 .entry-table {
   width: 100%;
-  min-width: 1180px;
+  min-width: 1280px;
   border-collapse: separate;
   border-spacing: 0;
 }
@@ -940,6 +1076,10 @@ input[type="radio"] {
 
 .col-weight {
   min-width: 96px;
+}
+
+.col-ai-status {
+  min-width: 128px;
 }
 
 .table-phrase {
@@ -1184,6 +1324,10 @@ input[type="radio"] {
     align-items: stretch;
   }
 
+  .ai-panel-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .review-pinyin-editor {
     grid-template-columns: 1fr;
   }
@@ -1195,14 +1339,14 @@ input[type="radio"] {
 
 @media (max-width: 640px) {
   .app-shell {
-    padding: 18px 14px 96px;
+    padding: calc(10px + env(safe-area-inset-top)) 10px calc(78px + env(safe-area-inset-bottom));
   }
 
   .top-nav {
     position: sticky;
-    bottom: 12px;
+    bottom: calc(10px + env(safe-area-inset-bottom));
     z-index: 3;
-    padding: 10px;
+    padding: 8px;
     border-radius: 999px;
     background: rgba(250, 244, 235, 0.84);
     backdrop-filter: blur(12px);
@@ -1211,6 +1355,7 @@ input[type="radio"] {
     flex-wrap: nowrap;
     overflow-x: auto;
     scrollbar-width: none;
+    margin-bottom: 12px;
   }
 
   .top-nav::-webkit-scrollbar {
@@ -1220,14 +1365,29 @@ input[type="radio"] {
   .nav-chip {
     flex: 0 0 auto;
     text-align: center;
-    padding: 12px 14px;
+    padding: 10px 12px;
     font-size: 0.88rem;
     white-space: nowrap;
+  }
+
+  .page-hero {
+    margin-bottom: 10px;
+  }
+
+  .panel,
+  .review-panel {
+    padding: 14px;
   }
 
   .panel-head {
     flex-direction: column;
     align-items: stretch;
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+
+  .panel-head h2 {
+    font-size: 1.2rem;
   }
 
   .review-actions-top {
@@ -1267,6 +1427,19 @@ input[type="radio"] {
     white-space: nowrap;
   }
 
+  .ai-panel-head {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .switch-field {
+    justify-content: center;
+  }
+
+  .ai-panel-grid {
+    grid-template-columns: 1fr;
+  }
+
   .decision-button {
     align-items: center;
     text-align: center;
@@ -1277,8 +1450,14 @@ input[type="radio"] {
   }
 
   .decision-button {
-    min-height: 72px;
+    min-height: 64px;
     padding: 14px 10px;
+  }
+
+  .decision-button.ai-agree-button {
+    min-height: 64px;
+    padding: 14px 10px;
+    margin-top: 10px;
   }
 
   .bulk-actions {
@@ -1307,11 +1486,42 @@ input[type="radio"] {
 
   .review-card {
     min-height: 0;
+    padding: 16px;
+    border-radius: 24px;
+  }
+
+  .review-status-row {
+    margin-bottom: 12px;
+  }
+
+  .review-word {
+    font-size: clamp(2.7rem, 18vw, 5.2rem);
+  }
+
+  .review-pinyin {
+    margin-top: 10px;
+  }
+
+  .review-pinyin-editor {
+    margin-top: 10px;
+    gap: 8px;
+  }
+
+  .review-inline-actions {
+    gap: 8px;
+  }
+
+  .review-meta {
+    margin-top: 12px;
+  }
+
+  .review-controls {
+    gap: 10px;
+    margin-top: 12px;
   }
 
   .review-meta {
     display: block;
-    margin-top: 20px;
   }
 
   .review-meta span {

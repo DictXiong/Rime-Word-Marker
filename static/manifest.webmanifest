@@ -1,0 +1,25 @@
+{
+  "name": "Rime 词库标注器",
+  "short_name": "词库标注器",
+  "description": "导入、筛选、管理、导出个人 Rime 词库。",
+  "start_url": "/review",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f6efe3",
+  "theme_color": "#f6efe3",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "/icons/app-icon-180.png",
+      "sizes": "180x180",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/app-icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

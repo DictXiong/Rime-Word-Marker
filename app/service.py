@@ -1,30 +1,56 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import random
 import re
 import sqlite3
+import threading
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from app.ai import MAX_AI_BATCH_SIZE, score_to_label
 from app.constants import ACCEPTED, DEFAULT_EXPORT_STATUSES, PENDING, REJECTED, VALID_STATUSES
 from app.pinyin_utils import transliterate_phrase
 
 YAML_HEADER_PATTERN = re.compile(r"^[A-Za-z_][\w-]*\s*:")
+EXPORT_DICTIONARY_NAME_UNSAFE_PATTERN = re.compile(r"[^A-Za-z0-9_.-]+")
+DEFAULT_DICTIONARY_NAME = "rime_word_marker_export"
 DEFAULT_REVIEW_SESSION = "default"
 REVIEW_HISTORY_LIMIT = 500
 REVIEW_MODE_SEQUENTIAL = "sequential"
 REVIEW_MODE_RANDOM = "random"
 VALID_REVIEW_MODES = {REVIEW_MODE_SEQUENTIAL, REVIEW_MODE_RANDOM}
 SQLITE_IN_MAX_VARIABLES = 900
+AI_MIN_TRAINING_TOTAL = 2000
+AI_MIN_CLASS_COUNT = 300
+AI_HARD_EXAMPLES_PER_CLASS = 128
+AI_SETTING_ENABLED = "ai_enabled"
+AI_SETTING_WORKER_STATUS = "ai_worker_status"
+AI_SETTING_LAST_SCAN_ID = "ai_last_scan_id"
+AI_SETTING_LAST_ERROR = "ai_last_error"
+AI_SETTING_LAST_RUN_AT = "ai_last_run_at"
+AI_WORKER_DISABLED = "disabled"
+AI_WORKER_IDLE = "idle"
+AI_WORKER_RUNNING = "running"
+AI_WORKER_ERROR = "error"
+VALID_AI_WORKER_STATUSES = {
+    AI_WORKER_DISABLED,
+    AI_WORKER_IDLE,
+    AI_WORKER_RUNNING,
+    AI_WORKER_ERROR,
+}
 
 
 class WordService:
     def __init__(self, db_path: str | Path) -> None:
         self.db_path = Path(db_path)
+        self._ai_training_examples_cache: dict[int, list[dict[str, Any]]] = {}
+        self._ai_training_examples_cache_version = 0
+        self._ai_training_examples_cache_lock = threading.RLock()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize_database()
 
@@ -72,8 +98,26 @@ class WordService:
                     mode TEXT NOT NULL DEFAULT 'sequential',
                     updated_at TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
                 """
             )
+            entry_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(entries)").fetchall()
+            }
+            for column_name, column_type in (
+                ("ai_label", "TEXT"),
+                ("ai_score", "REAL"),
+                ("ai_labeled_at", "TEXT"),
+                ("ai_model", "TEXT"),
+                ("ai_prompt_version", "TEXT"),
+            ):
+                if column_name not in entry_columns:
+                    connection.execute(f"ALTER TABLE entries ADD COLUMN {column_name} {column_type}")
+
             columns = {
                 row["name"]
                 for row in connection.execute("PRAGMA table_info(review_state)").fetchall()
@@ -82,7 +126,18 @@ class WordService:
                 connection.execute(
                     "ALTER TABLE review_state ADD COLUMN mode TEXT NOT NULL DEFAULT 'sequential'"
                 )
-                connection.commit()
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_entries_ai_queue
+                    ON entries (status, ai_label, id)
+                """
+            )
+            self._ensure_setting(connection, AI_SETTING_ENABLED, "0")
+            self._ensure_setting(connection, AI_SETTING_WORKER_STATUS, AI_WORKER_DISABLED)
+            self._ensure_setting(connection, AI_SETTING_LAST_SCAN_ID, "0")
+            self._ensure_setting(connection, AI_SETTING_LAST_ERROR, "")
+            self._ensure_setting(connection, AI_SETTING_LAST_RUN_AT, "")
+            connection.commit()
 
     def import_text(self, raw_text: str) -> dict[str, Any]:
         inserted = 0
@@ -188,12 +243,14 @@ class WordService:
         self,
         statuses: list[str] | None = None,
         include_weight: bool = False,
-        dictionary_name: str = "rime_word_marker_export",
+        include_ai_assist: bool = False,
+        dictionary_name: str = DEFAULT_DICTIONARY_NAME,
     ) -> str:
         return "".join(
             self.iter_export_dictionary_lines(
                 statuses=statuses,
                 include_weight=include_weight,
+                include_ai_assist=include_ai_assist,
                 dictionary_name=dictionary_name,
             )
         )
@@ -202,8 +259,10 @@ class WordService:
         self,
         statuses: list[str] | None = None,
         include_weight: bool = False,
-        dictionary_name: str = "rime_word_marker_export",
+        include_ai_assist: bool = False,
+        dictionary_name: str = DEFAULT_DICTIONARY_NAME,
     ):
+        dictionary_name = self.normalize_export_dictionary_name(dictionary_name)
         statuses = self._normalize_statuses(statuses or DEFAULT_EXPORT_STATUSES)
         placeholders = ",".join("?" for _ in statuses)
         header_lines = [
@@ -220,12 +279,26 @@ class WordService:
         with self._managed_connection() as connection:
             rows = connection.execute(
                 f"""
+                WITH export_view AS (
+                    SELECT
+                        id,
+                        phrase,
+                        pinyin,
+                        weight,
+                        CASE
+                            WHEN status IN ('accepted', 'rejected') THEN status
+                            WHEN ? = 1 AND status = 'pending' AND ai_label IN ('accepted', 'rejected')
+                                THEN ai_label
+                            ELSE status
+                        END AS effective_status
+                    FROM entries
+                )
                 SELECT phrase, pinyin, weight
-                FROM entries
-                WHERE status IN ({placeholders})
+                FROM export_view
+                WHERE effective_status IN ({placeholders})
                 ORDER BY weight DESC, id ASC
                 """,
-                statuses,
+                [1 if include_ai_assist else 0, *statuses],
             )
             for row in rows:
                 columns = [row["phrase"], row["pinyin"]]
@@ -233,21 +306,412 @@ class WordService:
                     columns.append(str(row["weight"]))
                 yield "\t".join(columns) + "\n"
 
-    def count_export_entries(self, statuses: list[str] | None = None) -> int:
+    def count_export_entries(
+        self,
+        statuses: list[str] | None = None,
+        include_ai_assist: bool = False,
+    ) -> int:
         normalized_statuses = self._normalize_statuses(statuses or DEFAULT_EXPORT_STATUSES)
         placeholders = ",".join("?" for _ in normalized_statuses)
 
         with self._managed_connection() as connection:
             row = connection.execute(
                 f"""
+                WITH export_view AS (
+                    SELECT
+                        CASE
+                            WHEN status IN ('accepted', 'rejected') THEN status
+                            WHEN ? = 1 AND status = 'pending' AND ai_label IN ('accepted', 'rejected')
+                                THEN ai_label
+                            ELSE status
+                        END AS effective_status
+                    FROM entries
+                )
                 SELECT COUNT(*) AS total
-                FROM entries
-                WHERE status IN ({placeholders})
+                FROM export_view
+                WHERE effective_status IN ({placeholders})
                 """,
-                normalized_statuses,
+                [1 if include_ai_assist else 0, *normalized_statuses],
             ).fetchone()
 
         return int(row["total"]) if row else 0
+
+    def get_ai_overview(
+        self,
+        configured: bool = False,
+        model_name: str | None = None,
+        prompt_version: str | None = None,
+    ) -> dict[str, Any]:
+        current_prompt_version = (prompt_version or "").strip()
+        with self._managed_connection() as connection:
+            settings = self._get_settings(
+                connection,
+                [
+                    AI_SETTING_ENABLED,
+                    AI_SETTING_WORKER_STATUS,
+                    AI_SETTING_LAST_SCAN_ID,
+                    AI_SETTING_LAST_ERROR,
+                    AI_SETTING_LAST_RUN_AT,
+                ],
+            )
+            training_row = connection.execute(
+                """
+                SELECT
+                    SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) AS accepted_count,
+                    SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) AS rejected_count
+                FROM entries
+                """,
+                (ACCEPTED, REJECTED),
+            ).fetchone()
+            ai_row = connection.execute(
+                """
+                SELECT
+                    SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) AS pending_total,
+                    SUM(
+                        CASE
+                            WHEN status = ?
+                                AND (
+                                    ai_label IS NULL
+                                    OR (? != '' AND (ai_prompt_version IS NULL OR ai_prompt_version != ?))
+                                )
+                                THEN 1
+                            ELSE 0
+                        END
+                    ) AS unlabeled_total,
+                    SUM(
+                        CASE
+                            WHEN status = ?
+                                AND ai_label IS NOT NULL
+                                AND ? != ''
+                                AND (ai_prompt_version IS NULL OR ai_prompt_version != ?)
+                                THEN 1
+                            ELSE 0
+                        END
+                    ) AS outdated_total,
+                    SUM(CASE WHEN status = ? AND ai_label = ? THEN 1 ELSE 0 END) AS ai_pending_total,
+                    SUM(CASE WHEN status = ? AND ai_label = ? THEN 1 ELSE 0 END) AS ai_accepted_total,
+                    SUM(CASE WHEN status = ? AND ai_label = ? THEN 1 ELSE 0 END) AS ai_rejected_total
+                FROM entries
+                """,
+                (
+                    PENDING,
+                    PENDING,
+                    current_prompt_version,
+                    current_prompt_version,
+                    PENDING,
+                    current_prompt_version,
+                    current_prompt_version,
+                    PENDING,
+                    PENDING,
+                    PENDING,
+                    ACCEPTED,
+                    PENDING,
+                    REJECTED,
+                ),
+            ).fetchone()
+
+        accepted_count = int(training_row["accepted_count"] or 0)
+        rejected_count = int(training_row["rejected_count"] or 0)
+        training_total = accepted_count + rejected_count
+        sufficient = (
+            training_total >= AI_MIN_TRAINING_TOTAL
+            and accepted_count >= AI_MIN_CLASS_COUNT
+            and rejected_count >= AI_MIN_CLASS_COUNT
+        )
+        worker_status = settings.get(AI_SETTING_WORKER_STATUS, AI_WORKER_DISABLED)
+        if worker_status not in VALID_AI_WORKER_STATUSES:
+            worker_status = AI_WORKER_DISABLED
+
+        return {
+            "enabled": settings.get(AI_SETTING_ENABLED, "0") == "1",
+            "configured": configured,
+            "model": (model_name or "").strip(),
+            "prompt_version": (prompt_version or "").strip(),
+            "training": {
+                "accepted": accepted_count,
+                "rejected": rejected_count,
+                "total": training_total,
+                "minimum_total": AI_MIN_TRAINING_TOTAL,
+                "minimum_each_class": AI_MIN_CLASS_COUNT,
+                "sufficient": sufficient,
+            },
+            "queue": {
+                "pending_total": int(ai_row["pending_total"] or 0),
+                "unlabeled": int(ai_row["unlabeled_total"] or 0),
+                "outdated": int(ai_row["outdated_total"] or 0),
+                "ai_pending": int(ai_row["ai_pending_total"] or 0),
+                "ai_accepted": int(ai_row["ai_accepted_total"] or 0),
+                "ai_rejected": int(ai_row["ai_rejected_total"] or 0),
+            },
+            "worker_status": worker_status,
+            "last_scan_id": int(settings.get(AI_SETTING_LAST_SCAN_ID, "0") or 0),
+            "last_error": settings.get(AI_SETTING_LAST_ERROR, ""),
+            "last_run_at": settings.get(AI_SETTING_LAST_RUN_AT, ""),
+            "requirement_message": self.build_ai_training_requirement_message(
+                accepted_count=accepted_count,
+                rejected_count=rejected_count,
+            ),
+        }
+
+    def build_ai_training_requirement_message(
+        self,
+        accepted_count: int | None = None,
+        rejected_count: int | None = None,
+    ) -> str:
+        if accepted_count is None or rejected_count is None:
+            overview = self.get_ai_overview()
+            accepted_count = overview["training"]["accepted"]
+            rejected_count = overview["training"]["rejected"]
+        total = accepted_count + rejected_count
+        if (
+            total >= AI_MIN_TRAINING_TOTAL
+            and accepted_count >= AI_MIN_CLASS_COUNT
+            and rejected_count >= AI_MIN_CLASS_COUNT
+        ):
+            return (
+                f"人工样本已满足自动标注条件：接受 {accepted_count} 条、拒绝 {rejected_count} 条。"
+            )
+        return (
+            "人工标注数据量不足。"
+            f" 当前接受 {accepted_count} 条、拒绝 {rejected_count} 条、合计 {total} 条；"
+            f" 至少需要合计 {AI_MIN_TRAINING_TOTAL} 条，且接受与拒绝各不少于 {AI_MIN_CLASS_COUNT} 条。"
+        )
+
+    def set_ai_enabled(
+        self,
+        enabled: bool,
+        configured: bool = False,
+        model_name: str | None = None,
+        prompt_version: str | None = None,
+    ) -> tuple[dict[str, Any], str]:
+        message = ""
+        with self._managed_connection() as connection:
+            accepted_count, rejected_count = self._get_ai_training_counts(connection)
+            sufficient = (
+                accepted_count + rejected_count >= AI_MIN_TRAINING_TOTAL
+                and accepted_count >= AI_MIN_CLASS_COUNT
+                and rejected_count >= AI_MIN_CLASS_COUNT
+            )
+            if enabled:
+                if not configured:
+                    enabled = False
+                    message = "AI 接口尚未配置完整，无法开启自动标注。"
+                elif not sufficient:
+                    enabled = False
+                    message = self.build_ai_training_requirement_message(
+                        accepted_count=accepted_count,
+                        rejected_count=rejected_count,
+                    )
+
+            self._set_setting(connection, AI_SETTING_ENABLED, "1" if enabled else "0")
+            self._set_setting(
+                connection,
+                AI_SETTING_WORKER_STATUS,
+                AI_WORKER_IDLE if enabled else AI_WORKER_DISABLED,
+            )
+            if not enabled and message:
+                self._set_setting(connection, AI_SETTING_LAST_ERROR, message)
+            elif not enabled:
+                self._set_setting(connection, AI_SETTING_LAST_ERROR, "")
+            elif enabled:
+                self._set_setting(connection, AI_SETTING_LAST_ERROR, "")
+            connection.commit()
+
+        return (
+            self.get_ai_overview(
+                configured=configured,
+                model_name=model_name,
+                prompt_version=prompt_version,
+            ),
+            message,
+        )
+
+    def disable_ai(self, message: str = "") -> dict[str, Any]:
+        with self._managed_connection() as connection:
+            self._set_setting(connection, AI_SETTING_ENABLED, "0")
+            self._set_setting(connection, AI_SETTING_WORKER_STATUS, AI_WORKER_DISABLED)
+            self._set_setting(connection, AI_SETTING_LAST_ERROR, message)
+            self._set_setting(connection, AI_SETTING_LAST_RUN_AT, self._now())
+            connection.commit()
+        return self.get_ai_overview()
+
+    def update_ai_runtime_state(
+        self,
+        worker_status: str,
+        last_error: str | None = None,
+        last_scan_id: int | None = None,
+    ) -> None:
+        normalized_status = (
+            worker_status if worker_status in VALID_AI_WORKER_STATUSES else AI_WORKER_ERROR
+        )
+        with self._managed_connection() as connection:
+            self._set_setting(connection, AI_SETTING_WORKER_STATUS, normalized_status)
+            if last_error is not None:
+                self._set_setting(connection, AI_SETTING_LAST_ERROR, last_error)
+            if last_scan_id is not None:
+                self._set_setting(connection, AI_SETTING_LAST_SCAN_ID, str(max(0, int(last_scan_id))))
+            self._set_setting(connection, AI_SETTING_LAST_RUN_AT, self._now())
+            connection.commit()
+
+    def sample_ai_training_examples(self, per_class: int = 768) -> list[dict[str, Any]]:
+        per_class = max(1, min(int(per_class), 1024))
+        while True:
+            with self._ai_training_examples_cache_lock:
+                cache_version = self._ai_training_examples_cache_version
+                cached_examples = self._ai_training_examples_cache.get(per_class)
+                if cached_examples is not None:
+                    return self._clone_ai_training_examples(cached_examples)
+
+            examples = self._build_ai_training_examples(per_class)
+            with self._ai_training_examples_cache_lock:
+                if cache_version == self._ai_training_examples_cache_version:
+                    self._ai_training_examples_cache[per_class] = self._clone_ai_training_examples(examples)
+                    return examples
+
+    def _build_ai_training_examples(self, per_class: int) -> list[dict[str, Any]]:
+        hard_limit = min(AI_HARD_EXAMPLES_PER_CLASS, max(1, per_class // 6))
+        with self._managed_connection() as connection:
+            accepted_rows = connection.execute(
+                "SELECT phrase, status, ai_label FROM entries WHERE status = ? ORDER BY id ASC",
+                (ACCEPTED,),
+            ).fetchall()
+            rejected_rows = connection.execute(
+                "SELECT phrase, status, ai_label FROM entries WHERE status = ? ORDER BY id ASC",
+                (REJECTED,),
+            ).fetchall()
+
+        accepted_hard = self._sample_rows(
+            self._ai_disagreement_rows(accepted_rows),
+            hard_limit,
+            seed=f"{ACCEPTED}:hard",
+            source="human_ai_disagreement",
+        )
+        rejected_hard = self._sample_rows(
+            self._ai_disagreement_rows(rejected_rows),
+            hard_limit,
+            seed=f"{REJECTED}:hard",
+            source="human_ai_disagreement",
+        )
+        hard_phrases = {item["phrase"] for item in [*accepted_hard, *rejected_hard]}
+
+        accepted_examples = self._sample_rows(
+            [row for row in accepted_rows if str(row["phrase"]) not in hard_phrases],
+            per_class,
+            seed=f"{ACCEPTED}:base",
+        )
+        rejected_examples = self._sample_rows(
+            [row for row in rejected_rows if str(row["phrase"]) not in hard_phrases],
+            per_class,
+            seed=f"{REJECTED}:base",
+        )
+        examples = accepted_examples + rejected_examples
+        hard_examples = accepted_hard + rejected_hard
+        return self._stable_shuffle([*hard_examples, *examples], seed="ai-training-examples")
+
+    def get_ai_batch_candidates(
+        self,
+        limit: int = 12,
+        prompt_version: str | None = None,
+        selection_mode: str = "sequential",
+    ) -> dict[str, Any]:
+        limit = max(1, min(int(limit), MAX_AI_BATCH_SIZE))
+        current_prompt_version = (prompt_version or "").strip()
+        if current_prompt_version:
+            ai_queue_condition = (
+                "status = ? AND (ai_label IS NULL OR ai_prompt_version IS NULL OR ai_prompt_version != ?)"
+            )
+            ai_queue_parameters: list[Any] = [PENDING, current_prompt_version]
+        else:
+            ai_queue_condition = "status = ? AND ai_label IS NULL"
+            ai_queue_parameters = [PENDING]
+
+        with self._managed_connection() as connection:
+            settings = self._get_settings(connection, [AI_SETTING_LAST_SCAN_ID])
+            last_scan_id = int(settings.get(AI_SETTING_LAST_SCAN_ID, "0") or 0)
+            if selection_mode == "random":
+                rows = self._get_random_ai_batch_rows(
+                    connection,
+                    ai_queue_condition,
+                    ai_queue_parameters,
+                    limit,
+                )
+            else:
+                rows = connection.execute(
+                    f"""
+                    SELECT *
+                    FROM entries
+                    WHERE {ai_queue_condition} AND id > ?
+                    ORDER BY id ASC
+                    LIMIT ?
+                    """,
+                    [*ai_queue_parameters, last_scan_id, limit],
+                ).fetchall()
+                if not rows and last_scan_id:
+                    rows = connection.execute(
+                        f"""
+                        SELECT *
+                        FROM entries
+                        WHERE {ai_queue_condition}
+                        ORDER BY id ASC
+                        LIMIT ?
+                        """,
+                        [*ai_queue_parameters, limit],
+                    ).fetchall()
+
+        items = [self._row_to_entry(row) for row in rows]
+        next_scan_id = items[-1]["id"] if items else 0
+        return {"items": items, "next_scan_id": next_scan_id}
+
+    def apply_ai_annotations(
+        self,
+        source_entries: list[dict[str, Any]],
+        predictions: list[dict[str, Any]],
+        model_name: str,
+        prompt_version: str,
+        next_scan_id: int = 0,
+    ) -> int:
+        if not source_entries or not predictions:
+            return 0
+
+        source_map = {int(entry["id"]): entry for entry in source_entries}
+        updated_count = 0
+        now = self._now()
+
+        with self._managed_connection() as connection:
+            for prediction in predictions:
+                entry_id = int(prediction["id"])
+                source = source_map.get(entry_id)
+                if source is None:
+                    continue
+                score = max(0.0, min(1.0, float(prediction["score"])))
+                ai_label = score_to_label(score)
+                cursor = connection.execute(
+                    """
+                    UPDATE entries
+                    SET ai_label = ?, ai_score = ?, ai_labeled_at = ?, ai_model = ?, ai_prompt_version = ?
+                    WHERE id = ? AND phrase = ? AND status = ?
+                    """,
+                    (
+                        ai_label,
+                        score,
+                        now,
+                        model_name.strip(),
+                        prompt_version.strip(),
+                        entry_id,
+                        source["phrase"],
+                        PENDING,
+                    ),
+                )
+                if cursor.rowcount:
+                    updated_count += 1
+
+            self._set_setting(connection, AI_SETTING_LAST_SCAN_ID, str(max(0, int(next_scan_id))))
+            self._set_setting(connection, AI_SETTING_LAST_RUN_AT, now)
+            if updated_count:
+                self._set_setting(connection, AI_SETTING_LAST_ERROR, "")
+            connection.commit()
+
+        return updated_count
 
     @staticmethod
     def _fetch_entry_statuses(
@@ -269,6 +733,52 @@ class WordService:
             for row in rows:
                 statuses[row["phrase"]] = row["status"]
         return statuses
+
+    @staticmethod
+    def _get_random_ai_batch_rows(
+        connection: sqlite3.Connection,
+        ai_queue_condition: str,
+        ai_queue_parameters: list[Any],
+        limit: int,
+    ) -> list[sqlite3.Row]:
+        bounds = connection.execute(
+            f"""
+            SELECT MIN(id) AS min_id, MAX(id) AS max_id
+            FROM entries
+            WHERE {ai_queue_condition}
+            """,
+            ai_queue_parameters,
+        ).fetchone()
+        if bounds is None or bounds["min_id"] is None or bounds["max_id"] is None:
+            return []
+
+        target_id = random.randint(bounds["min_id"], bounds["max_id"])
+        rows = connection.execute(
+            f"""
+            SELECT *
+            FROM entries
+            WHERE {ai_queue_condition} AND id >= ?
+            ORDER BY id ASC
+            LIMIT ?
+            """,
+            [*ai_queue_parameters, target_id, limit],
+        ).fetchall()
+
+        remaining = limit - len(rows)
+        if remaining <= 0:
+            return rows
+
+        wrapped_rows = connection.execute(
+            f"""
+            SELECT *
+            FROM entries
+            WHERE {ai_queue_condition} AND id < ?
+            ORDER BY id ASC
+            LIMIT ?
+            """,
+            [*ai_queue_parameters, target_id, remaining],
+        ).fetchall()
+        return [*rows, *wrapped_rows]
 
     def get_stats(self) -> dict[str, int]:
         with self._managed_connection() as connection:
@@ -342,6 +852,7 @@ class WordService:
             self._apply_status_update(connection, entry_id, status)
             connection.commit()
 
+        self._invalidate_ai_training_examples_cache()
         entry = self.get_entry(entry_id)
         if entry is None:  # pragma: no cover - guarded above
             raise LookupError("词条不存在。")
@@ -352,6 +863,7 @@ class WordService:
         entry_id: int,
         status: str,
         session_key: str = DEFAULT_REVIEW_SESSION,
+        prefer_ai: bool = False,
     ) -> dict[str, Any]:
         if status not in VALID_STATUSES:
             raise ValueError("无效状态。")
@@ -359,13 +871,14 @@ class WordService:
         with self._managed_connection() as connection:
             self._apply_status_update(connection, entry_id, status)
 
-            history_ids, pointer, mode = self._load_review_state(connection, session_key)
+            history_ids, pointer, _ = self._load_review_state(connection, session_key)
+            mode = REVIEW_MODE_RANDOM
             history_ids, pointer, history_entries = self._resolve_review_history(connection, history_ids, pointer)
 
             if pointer < len(history_entries) - 1:
                 pointer += 1
             else:
-                next_row = self._get_next_review_row(connection, mode, history_ids)
+                next_row = self._get_next_review_row(connection, history_ids, prefer_ai=prefer_ai)
                 if next_row is not None:
                     next_id = next_row["id"]
                     if not history_ids or history_ids[-1] != next_id:
@@ -381,7 +894,7 @@ class WordService:
                 else:
                     pointer = -1
 
-            self._save_review_state(connection, session_key, history_ids, pointer, mode, commit=False)
+            self._save_review_state(connection, session_key, history_ids, pointer, REVIEW_MODE_RANDOM, commit=False)
             connection.commit()
 
             current_entry = history_entries[pointer] if 0 <= pointer < len(history_entries) else None
@@ -389,12 +902,13 @@ class WordService:
                 connection.execute("SELECT * FROM entries WHERE id = ?", (entry_id,)).fetchone()
             )
 
+        self._invalidate_ai_training_examples_cache()
         return {
             "history": history_entries,
             "pointer": pointer,
             "current_entry": current_entry,
             "can_go_back": self._review_can_go_back(pointer, len(history_entries)),
-            "mode": mode,
+            "mode": REVIEW_MODE_RANDOM,
             "updated_entry": updated_entry,
         }
 
@@ -506,6 +1020,8 @@ class WordService:
 
             connection.commit()
 
+        if status_provided:
+            self._invalidate_ai_training_examples_cache()
         updated_entries = [self.get_entry(entry_id) for entry_id in normalized_ids]
         return {
             "updated_count": len(normalized_ids),
@@ -585,17 +1101,39 @@ class WordService:
             elif status_provided and status in {ACCEPTED, REJECTED}:
                 labeled_at = self._now()
 
+            ai_label = None if phrase_changed else current.get("ai_label")
+            ai_score = None if phrase_changed else current.get("ai_score")
+            ai_labeled_at = None if phrase_changed else current.get("ai_labeled_at")
+            ai_model = None if phrase_changed else current.get("ai_model")
+            ai_prompt_version = None if phrase_changed else current.get("ai_prompt_version")
+
             connection.execute(
                 """
                 UPDATE entries
-                SET phrase = ?, pinyin = ?, weight = ?, status = ?, imported_at = ?, labeled_at = ?
+                SET phrase = ?, pinyin = ?, weight = ?, status = ?, imported_at = ?, labeled_at = ?,
+                    ai_label = ?, ai_score = ?, ai_labeled_at = ?, ai_model = ?, ai_prompt_version = ?
                 WHERE id = ?
                 """,
-                (phrase, pinyin, weight, status, imported_at, labeled_at, entry_id),
+                (
+                    phrase,
+                    pinyin,
+                    weight,
+                    status,
+                    imported_at,
+                    labeled_at,
+                    ai_label,
+                    ai_score,
+                    ai_labeled_at,
+                    ai_model,
+                    ai_prompt_version,
+                    entry_id,
+                ),
             )
 
             connection.commit()
 
+        if phrase_changed or status_provided:
+            self._invalidate_ai_training_examples_cache()
         entry = self.get_entry(entry_id)
         if entry is None:  # pragma: no cover - guarded above
             raise LookupError("词条不存在。")
@@ -606,6 +1144,7 @@ class WordService:
         page: int = 1,
         page_size: int = 30,
         status: str | None = None,
+        ai_status: str | None = None,
         query: str | None = None,
     ) -> dict[str, Any]:
         page = max(page, 1)
@@ -619,6 +1158,15 @@ class WordService:
                 raise ValueError("无效状态。")
             where_clauses.append("status = ?")
             parameters.append(status)
+
+        if ai_status and ai_status != "all":
+            if ai_status == "none":
+                where_clauses.append("ai_label IS NULL")
+            elif ai_status in VALID_STATUSES:
+                where_clauses.append("ai_label = ?")
+                parameters.append(ai_status)
+            else:
+                raise ValueError("无效 AI 标注状态。")
 
         if query:
             where_clauses.append("(phrase LIKE ? OR pinyin LIKE ?)")
@@ -658,9 +1206,10 @@ class WordService:
 
     def get_review_state(self, session_key: str = DEFAULT_REVIEW_SESSION) -> dict[str, Any]:
         with self._managed_connection() as connection:
-            history_ids, pointer, mode = self._load_review_state(connection, session_key)
+            history_ids, pointer, _ = self._load_review_state(connection, session_key)
+            mode = REVIEW_MODE_RANDOM
             history_ids, pointer, history_entries = self._resolve_review_history(connection, history_ids, pointer)
-            self._save_review_state(connection, session_key, history_ids, pointer, mode)
+            self._save_review_state(connection, session_key, history_ids, pointer, REVIEW_MODE_RANDOM)
             current_entry = history_entries[pointer] if 0 <= pointer < len(history_entries) else None
 
         return {
@@ -671,15 +1220,20 @@ class WordService:
             "mode": mode,
         }
 
-    def advance_review(self, session_key: str = DEFAULT_REVIEW_SESSION) -> dict[str, Any]:
+    def advance_review(
+        self,
+        session_key: str = DEFAULT_REVIEW_SESSION,
+        prefer_ai: bool = False,
+    ) -> dict[str, Any]:
         with self._managed_connection() as connection:
-            history_ids, pointer, mode = self._load_review_state(connection, session_key)
+            history_ids, pointer, _ = self._load_review_state(connection, session_key)
+            mode = REVIEW_MODE_RANDOM
             history_ids, pointer, history_entries = self._resolve_review_history(connection, history_ids, pointer)
 
             if pointer < len(history_entries) - 1:
                 pointer += 1
             else:
-                next_row = self._get_next_review_row(connection, mode, history_ids)
+                next_row = self._get_next_review_row(connection, history_ids, prefer_ai=prefer_ai)
                 if next_row is not None:
                     next_id = next_row["id"]
                     if not history_ids or history_ids[-1] != next_id:
@@ -695,7 +1249,7 @@ class WordService:
                 else:
                     pointer = -1
 
-            self._save_review_state(connection, session_key, history_ids, pointer, mode)
+            self._save_review_state(connection, session_key, history_ids, pointer, REVIEW_MODE_RANDOM)
             current_entry = history_entries[pointer] if 0 <= pointer < len(history_entries) else None
 
         return {
@@ -703,12 +1257,12 @@ class WordService:
             "pointer": pointer,
             "current_entry": current_entry,
             "can_go_back": self._review_can_go_back(pointer, len(history_entries)),
-            "mode": mode,
+            "mode": REVIEW_MODE_RANDOM,
         }
 
     def move_review_back(self, session_key: str = DEFAULT_REVIEW_SESSION) -> dict[str, Any]:
         with self._managed_connection() as connection:
-            history_ids, pointer, mode = self._load_review_state(connection, session_key)
+            history_ids, pointer, _ = self._load_review_state(connection, session_key)
             history_ids, pointer, history_entries = self._resolve_review_history(connection, history_ids, pointer)
 
             if pointer == len(history_entries) and history_entries:
@@ -716,7 +1270,7 @@ class WordService:
             elif pointer > 0:
                 pointer -= 1
 
-            self._save_review_state(connection, session_key, history_ids, pointer, mode)
+            self._save_review_state(connection, session_key, history_ids, pointer, REVIEW_MODE_RANDOM)
             current_entry = history_entries[pointer] if 0 <= pointer < len(history_entries) else None
 
         return {
@@ -724,7 +1278,7 @@ class WordService:
             "pointer": pointer,
             "current_entry": current_entry,
             "can_go_back": self._review_can_go_back(pointer, len(history_entries)),
-            "mode": mode,
+            "mode": REVIEW_MODE_RANDOM,
         }
 
     def preview_review_entries(
@@ -734,10 +1288,11 @@ class WordService:
     ) -> dict[str, Any]:
         count = max(0, min(int(count), 20))
         if count == 0:
-            return {"entries": [], "mode": REVIEW_MODE_SEQUENTIAL}
+            return {"entries": [], "mode": REVIEW_MODE_RANDOM}
 
         with self._managed_connection() as connection:
-            history_ids, pointer, mode = self._load_review_state(connection, session_key)
+            history_ids, pointer, _ = self._load_review_state(connection, session_key)
+            mode = REVIEW_MODE_RANDOM
             history_ids, pointer, history_entries = self._resolve_review_history(connection, history_ids, pointer)
 
             previews: list[dict[str, Any]] = []
@@ -748,7 +1303,7 @@ class WordService:
                 previews.extend(future_entries)
 
             while len(previews) < count:
-                next_row = self._get_next_review_row(connection, mode, preview_history_ids)
+                next_row = self._get_next_review_row(connection, preview_history_ids)
                 if next_row is None:
                     break
 
@@ -768,6 +1323,7 @@ class WordService:
     ) -> dict[str, Any]:
         if mode not in VALID_REVIEW_MODES:
             raise ValueError("无效筛选模式。")
+        mode = REVIEW_MODE_RANDOM
 
         with self._managed_connection() as connection:
             history_ids, pointer, _ = self._load_review_state(connection, session_key)
@@ -793,6 +1349,14 @@ class WordService:
         return normalized or list(DEFAULT_EXPORT_STATUSES)
 
     @staticmethod
+    def normalize_export_dictionary_name(dictionary_name: str) -> str:
+        normalized = EXPORT_DICTIONARY_NAME_UNSAFE_PATTERN.sub(
+            "_",
+            str(dictionary_name or "").strip(),
+        ).strip("._-")
+        return (normalized[:80] or DEFAULT_DICTIONARY_NAME)
+
+    @staticmethod
     def _row_to_entry(row: sqlite3.Row) -> dict[str, Any]:
         return {
             "id": row["id"],
@@ -802,6 +1366,11 @@ class WordService:
             "status": row["status"],
             "imported_at": row["imported_at"],
             "labeled_at": row["labeled_at"],
+            "ai_label": row["ai_label"] if "ai_label" in row.keys() else None,
+            "ai_score": row["ai_score"] if "ai_score" in row.keys() else None,
+            "ai_labeled_at": row["ai_labeled_at"] if "ai_labeled_at" in row.keys() else None,
+            "ai_model": row["ai_model"] if "ai_model" in row.keys() else None,
+            "ai_prompt_version": row["ai_prompt_version"] if "ai_prompt_version" in row.keys() else None,
         }
 
     @staticmethod
@@ -844,6 +1413,119 @@ class WordService:
                 normalized.append(entry_id)
         return normalized
 
+    @classmethod
+    def _sample_rows(
+        cls,
+        rows: list[sqlite3.Row],
+        limit: int,
+        seed: str,
+        source: str = "human",
+    ) -> list[dict[str, Any]]:
+        if not rows:
+            return []
+        if len(rows) <= limit:
+            selected = list(rows)
+        else:
+            selected = sorted(rows, key=lambda row: cls._stable_sample_key(row, seed))[:limit]
+        return [
+            {
+                "phrase": str(row["phrase"]),
+                "label": str(row["status"]),
+                "score": 1.0 if str(row["status"]) == ACCEPTED else 0.0,
+                "source": source,
+                **(
+                    {"previous_ai_label": str(row["ai_label"])}
+                    if source == "human_ai_disagreement"
+                    and "ai_label" in row.keys()
+                    and row["ai_label"]
+                    else {}
+                ),
+            }
+            for row in selected
+        ]
+
+    @staticmethod
+    def _ai_disagreement_rows(rows: list[sqlite3.Row]) -> list[sqlite3.Row]:
+        return [
+            row
+            for row in rows
+            if "ai_label" in row.keys()
+            and row["ai_label"] in VALID_STATUSES
+            and row["ai_label"] != row["status"]
+        ]
+
+    @staticmethod
+    def _stable_sample_key(row: sqlite3.Row, seed: str) -> str:
+        phrase = str(row["phrase"])
+        status = str(row["status"])
+        return hashlib.sha256(f"{seed}\0{status}\0{phrase}".encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _stable_shuffle(examples: list[dict[str, Any]], seed: str) -> list[dict[str, Any]]:
+        return sorted(
+            examples,
+            key=lambda item: hashlib.sha256(
+                f"{seed}\0{item.get('source', '')}\0{item.get('label', '')}\0{item.get('phrase', '')}".encode(
+                    "utf-8"
+                )
+            ).hexdigest(),
+        )
+
+    @staticmethod
+    def _get_ai_training_counts(connection: sqlite3.Connection) -> tuple[int, int]:
+        row = connection.execute(
+            """
+            SELECT
+                SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) AS accepted_count,
+                SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) AS rejected_count
+            FROM entries
+            """,
+            (ACCEPTED, REJECTED),
+        ).fetchone()
+        return int(row["accepted_count"] or 0), int(row["rejected_count"] or 0)
+
+    @staticmethod
+    def _clone_ai_training_examples(examples: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [dict(example) for example in examples]
+
+    def _invalidate_ai_training_examples_cache(self) -> None:
+        with self._ai_training_examples_cache_lock:
+            self._ai_training_examples_cache.clear()
+            self._ai_training_examples_cache_version += 1
+
+    @staticmethod
+    def _ensure_setting(connection: sqlite3.Connection, key: str, default_value: str) -> None:
+        connection.execute(
+            """
+            INSERT INTO settings (key, value)
+            VALUES (?, ?)
+            ON CONFLICT(key) DO NOTHING
+            """,
+            (key, default_value),
+        )
+
+    @staticmethod
+    def _get_settings(connection: sqlite3.Connection, keys: list[str]) -> dict[str, str]:
+        if not keys:
+            return {}
+        placeholders = ",".join("?" for _ in keys)
+        rows = connection.execute(
+            f"SELECT key, value FROM settings WHERE key IN ({placeholders})",
+            keys,
+        ).fetchall()
+        return {str(row["key"]): str(row["value"]) for row in rows}
+
+    @staticmethod
+    def _set_setting(connection: sqlite3.Connection, key: str, value: str) -> None:
+        connection.execute(
+            """
+            INSERT INTO settings (key, value)
+            VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            (key, value),
+        )
+
     def _load_review_state(
         self,
         connection: sqlite3.Connection,
@@ -860,10 +1542,10 @@ class WordService:
                 INSERT INTO review_state (session_key, history_json, pointer, mode, updated_at)
                 VALUES (?, '[]', -1, ?, ?)
                 """,
-                (session_key, REVIEW_MODE_SEQUENTIAL, self._now()),
+                (session_key, REVIEW_MODE_RANDOM, self._now()),
             )
             connection.commit()
-            return [], -1, REVIEW_MODE_SEQUENTIAL
+            return [], -1, REVIEW_MODE_RANDOM
 
         try:
             history_ids = [int(item) for item in json.loads(row["history_json"])]
@@ -871,8 +1553,7 @@ class WordService:
             history_ids = []
 
         pointer = int(row["pointer"])
-        mode = row["mode"] if row["mode"] in VALID_REVIEW_MODES else REVIEW_MODE_SEQUENTIAL
-        return history_ids, pointer, mode
+        return history_ids, pointer, REVIEW_MODE_RANDOM
 
     def _save_review_state(
         self,
@@ -940,14 +1621,10 @@ class WordService:
     def _get_next_review_row(
         self,
         connection: sqlite3.Connection,
-        mode: str,
         history_ids: list[int],
+        prefer_ai: bool = False,
     ) -> sqlite3.Row | None:
-        if mode == REVIEW_MODE_RANDOM:
-            return self._get_random_pending_row(connection, history_ids)
-
-        after_id = history_ids[-1] if history_ids else None
-        return self._get_next_pending_row(connection, after_id)
+        return self._get_random_pending_row(connection, history_ids, prefer_ai=prefer_ai)
 
     def _get_next_pending_row(
         self,
@@ -996,26 +1673,75 @@ class WordService:
         self,
         connection: sqlite3.Connection,
         exclude_ids: list[int],
+        prefer_ai: bool = False,
+    ) -> sqlite3.Row | None:
+        if prefer_ai:
+            row = self._get_random_pending_row_for_condition(
+                connection,
+                exclude_ids,
+                "status = ? AND ai_label IS NOT NULL",
+                [PENDING],
+            )
+            if row is not None:
+                return row
+
+        return self._get_random_pending_row_for_condition(
+            connection,
+            exclude_ids,
+            "status = ?",
+            [PENDING],
+        )
+
+    def _get_random_pending_row_for_condition(
+        self,
+        connection: sqlite3.Connection,
+        exclude_ids: list[int],
+        condition_sql: str,
+        condition_parameters: list[Any],
     ) -> sqlite3.Row | None:
         bounds = connection.execute(
-            """
+            f"""
             SELECT MIN(id) AS min_id, MAX(id) AS max_id
             FROM entries
-            WHERE status = ?
+            WHERE {condition_sql}
             """,
-            (PENDING,),
+            condition_parameters,
         ).fetchone()
         if bounds is None or bounds["min_id"] is None or bounds["max_id"] is None:
             return None
 
         target_id = random.randint(bounds["min_id"], bounds["max_id"])
-        row = self._find_pending_row_from(connection, target_id, exclude_ids)
+        row = self._find_pending_row_from(
+            connection,
+            target_id,
+            exclude_ids,
+            condition_sql,
+            condition_parameters,
+        )
         if row is None:
-            row = self._find_pending_row_before(connection, target_id, exclude_ids)
+            row = self._find_pending_row_before(
+                connection,
+                target_id,
+                exclude_ids,
+                condition_sql,
+                condition_parameters,
+            )
         if row is None and exclude_ids:
-            row = self._find_pending_row_from(connection, target_id, [])
+            row = self._find_pending_row_from(
+                connection,
+                target_id,
+                [],
+                condition_sql,
+                condition_parameters,
+            )
             if row is None:
-                row = self._find_pending_row_before(connection, target_id, [])
+                row = self._find_pending_row_before(
+                    connection,
+                    target_id,
+                    [],
+                    condition_sql,
+                    condition_parameters,
+                )
         return row
 
     @staticmethod
@@ -1023,6 +1749,8 @@ class WordService:
         connection: sqlite3.Connection,
         start_id: int,
         exclude_ids: list[int],
+        condition_sql: str,
+        condition_parameters: list[Any],
     ) -> sqlite3.Row | None:
         if exclude_ids:
             placeholders = ",".join("?" for _ in exclude_ids)
@@ -1030,22 +1758,22 @@ class WordService:
                 f"""
                 SELECT *
                 FROM entries
-                WHERE status = ? AND id >= ? AND id NOT IN ({placeholders})
+                WHERE {condition_sql} AND id >= ? AND id NOT IN ({placeholders})
                 ORDER BY id ASC
                 LIMIT 1
                 """,
-                [PENDING, start_id, *exclude_ids],
+                [*condition_parameters, start_id, *exclude_ids],
             ).fetchone()
 
         return connection.execute(
-            """
+            f"""
             SELECT *
             FROM entries
-            WHERE status = ? AND id >= ?
+            WHERE {condition_sql} AND id >= ?
             ORDER BY id ASC
             LIMIT 1
             """,
-            (PENDING, start_id),
+            [*condition_parameters, start_id],
         ).fetchone()
 
     @staticmethod
@@ -1053,6 +1781,8 @@ class WordService:
         connection: sqlite3.Connection,
         before_id: int,
         exclude_ids: list[int],
+        condition_sql: str,
+        condition_parameters: list[Any],
     ) -> sqlite3.Row | None:
         if exclude_ids:
             placeholders = ",".join("?" for _ in exclude_ids)
@@ -1060,22 +1790,22 @@ class WordService:
                 f"""
                 SELECT *
                 FROM entries
-                WHERE status = ? AND id < ? AND id NOT IN ({placeholders})
+                WHERE {condition_sql} AND id < ? AND id NOT IN ({placeholders})
                 ORDER BY id ASC
                 LIMIT 1
                 """,
-                [PENDING, before_id, *exclude_ids],
+                [*condition_parameters, before_id, *exclude_ids],
             ).fetchone()
 
         return connection.execute(
-            """
+            f"""
             SELECT *
             FROM entries
-            WHERE status = ? AND id < ?
+            WHERE {condition_sql} AND id < ?
             ORDER BY id ASC
             LIMIT 1
             """,
-            (PENDING, before_id),
+            [*condition_parameters, before_id],
         ).fetchone()
 
     def _apply_status_update(

@@ -3,7 +3,20 @@ const STATUS_LABELS = {
   accepted: "接受",
   rejected: "拒绝",
 };
+const AI_STATUS_LABELS = {
+  pending: "AI 待定",
+  accepted: "AI 接受",
+  rejected: "AI 拒绝",
+  unknown: "AI 未标注",
+};
+const AI_WORKER_LABELS = {
+  disabled: "已关闭",
+  idle: "空闲",
+  running: "运行中",
+  error: "异常",
+};
 const REVIEW_SESSION_STORAGE_KEY = "reviewSessionKey";
+const REVIEW_PREFER_AI_STORAGE_KEY = "reviewPreferAi";
 let fallbackReviewSessionKey = null;
 
 function getCurrentPage() {
@@ -35,12 +48,19 @@ const state = {
     pointer: -1,
     loading: false,
     canGoBack: false,
-    mode: getStoredReviewMode(),
+    mode: "random",
+    preferAi: getStoredReviewPreferAi(),
+  },
+  ai: {
+    overview: null,
+    loading: false,
+    pollTimer: null,
   },
   manage: {
     page: 1,
     pageSize: 30,
     status: "all",
+    aiStatus: "all",
     query: "",
     totalPages: 1,
     currentItems: [],
@@ -58,7 +78,6 @@ document.addEventListener("DOMContentLoaded", async () => {
   state.activeView = getCurrentPage();
   cacheElements();
   bindEvents();
-  updateReviewModeButtons();
   updateSelectedCount();
   await refreshStats();
 
@@ -69,27 +88,32 @@ document.addEventListener("DOMContentLoaded", async () => {
   if (els.manageFilterForm) {
     state.manage.query = els.manageQuery?.value.trim() || "";
     state.manage.status = els.manageStatus?.value || "all";
+    state.manage.aiStatus = els.manageAiStatus?.value || "all";
     state.manage.pageSize = Number(els.managePageSize?.value || state.manage.pageSize);
+    await loadAiOverview();
     await loadManageEntries();
   }
 
   if (els.exportForm) {
     await updateExportCount();
   }
+
+  if (els.aiEnabledToggle) {
+    startAiOverviewPolling();
+  }
 });
 
-function getStoredReviewMode() {
+function getStoredReviewPreferAi() {
   try {
-    const mode = window.localStorage.getItem("reviewMode");
-    return mode === "random" ? "random" : "sequential";
+    return window.localStorage.getItem(REVIEW_PREFER_AI_STORAGE_KEY) === "1";
   } catch {
-    return "sequential";
+    return false;
   }
 }
 
-function storeReviewMode(mode) {
+function storeReviewPreferAi(preferAi) {
   try {
-    window.localStorage.setItem("reviewMode", mode);
+    window.localStorage.setItem(REVIEW_PREFER_AI_STORAGE_KEY, preferAi ? "1" : "0");
   } catch {
     // Ignore storage failures and keep using in-memory mode.
   }
@@ -108,13 +132,16 @@ function cacheElements() {
   els.reviewWeight = document.getElementById("reviewWeight");
   els.reviewImportedAt = document.getElementById("reviewImportedAt");
   els.reviewLabeledAt = document.getElementById("reviewLabeledAt");
+  els.reviewAiStatus = document.getElementById("reviewAiStatus");
+  els.reviewAiScore = document.getElementById("reviewAiScore");
+  els.reviewAgreeAiButton = document.getElementById("reviewAgreeAiButton");
   els.reviewHistoryMenu = document.getElementById("reviewHistoryMenu");
   els.reviewHistoryDropdown = document.getElementById("reviewHistoryDropdown");
   els.reviewPinyinForm = document.getElementById("reviewPinyinForm");
   els.reviewPinyinInput = document.getElementById("reviewPinyinInput");
   els.reviewAutoPinyinButton = document.getElementById("reviewAutoPinyinButton");
   els.reviewSavePinyinButton = document.getElementById("reviewSavePinyinButton");
-  els.reviewModeButtons = [...document.querySelectorAll("[data-review-mode]")];
+  els.reviewPreferAiToggle = document.getElementById("reviewPreferAiToggle");
 
   els.importForm = document.getElementById("importForm");
   els.importFile = document.getElementById("importFile");
@@ -124,6 +151,7 @@ function cacheElements() {
   els.exportForm = document.getElementById("exportForm");
   els.exportName = document.getElementById("exportName");
   els.includeWeight = document.getElementById("includeWeight");
+  els.includeAiAssist = document.getElementById("includeAiAssist");
   els.exportCountNote = document.getElementById("exportCountNote");
   els.importLoadingOverlay = document.getElementById("importLoadingOverlay");
   els.importLoadingText = document.getElementById("importLoadingText");
@@ -131,6 +159,7 @@ function cacheElements() {
   els.manageFilterForm = document.getElementById("manageFilterForm");
   els.manageQuery = document.getElementById("manageQuery");
   els.manageStatus = document.getElementById("manageStatus");
+  els.manageAiStatus = document.getElementById("manageAiStatus");
   els.managePageSize = document.getElementById("managePageSize");
   els.entryList = document.getElementById("entryList");
   els.pageInfo = document.getElementById("pageInfo");
@@ -145,6 +174,13 @@ function cacheElements() {
   els.bulkPendingButton = document.getElementById("bulkPendingButton");
   els.bulkRejectButton = document.getElementById("bulkRejectButton");
   els.openBulkEditButton = document.getElementById("openBulkEditButton");
+  els.aiEnabledToggle = document.getElementById("aiEnabledToggle");
+  els.aiPanelNote = document.getElementById("aiPanelNote");
+  els.aiTrainingSummary = document.getElementById("aiTrainingSummary");
+  els.aiQueueSummary = document.getElementById("aiQueueSummary");
+  els.aiWorkerStatus = document.getElementById("aiWorkerStatus");
+  els.aiModelSummary = document.getElementById("aiModelSummary");
+  els.aiLastError = document.getElementById("aiLastError");
 
   els.entryEditDialog = document.getElementById("entryEditDialog");
   els.entryEditForm = document.getElementById("entryEditForm");
@@ -196,11 +232,22 @@ function bindEvents() {
     els.reviewAutoPinyinButton.addEventListener("click", async () => {
       await fillReviewPinyinFromPhrase();
     });
-    els.reviewModeButtons.forEach((button) => {
-      button.addEventListener("click", async () => {
-        await setReviewMode(button.dataset.reviewMode);
-      });
+    els.reviewAgreeAiButton?.addEventListener("click", async () => {
+      const current = getCurrentReviewEntry();
+      if (!current?.ai_label || current.ai_label === "pending") return;
+      await labelCurrent(current.ai_label);
     });
+    if (els.reviewPreferAiToggle) {
+      els.reviewPreferAiToggle.checked = state.review.preferAi;
+      els.reviewPreferAiToggle.addEventListener("change", () => {
+        state.review.preferAi = els.reviewPreferAiToggle.checked;
+        storeReviewPreferAi(state.review.preferAi);
+        state.review.timeline = [];
+        state.review.pointer = -1;
+        state.review.canGoBack = false;
+        void advanceReview("next", false);
+      });
+    }
     els.reviewHistoryDropdown?.addEventListener("click", (event) => {
       const option = event.target.closest("[data-history-target]");
       if (!option) return;
@@ -290,11 +337,12 @@ function bindEvents() {
       const params = new URLSearchParams();
       params.set("statuses", statuses.join(","));
       params.set("include_weight", els.includeWeight.checked ? "1" : "0");
+      params.set("include_ai_assist", els.includeAiAssist.checked ? "1" : "0");
       params.set("name", els.exportName.value.trim() || "rime_word_marker_export");
       window.location.href = `/api/export?${params.toString()}`;
     });
 
-    document.querySelectorAll('input[name="exportStatus"]').forEach((input) => {
+    [els.includeAiAssist, ...document.querySelectorAll('input[name="exportStatus"]')].forEach((input) => {
       input.addEventListener("change", () => {
         void updateExportCount();
       });
@@ -307,6 +355,7 @@ function bindEvents() {
       state.manage.page = 1;
       state.manage.query = els.manageQuery.value.trim();
       state.manage.status = els.manageStatus.value;
+      state.manage.aiStatus = els.manageAiStatus.value;
       state.manage.pageSize = Number(els.managePageSize.value);
       await loadManageEntries();
     });
@@ -350,6 +399,9 @@ function bindEvents() {
       await applyBulkStatus("rejected");
     });
     els.openBulkEditButton.addEventListener("click", openBulkEditDialog);
+    els.aiEnabledToggle?.addEventListener("change", async () => {
+      await toggleAiEnabled(els.aiEnabledToggle.checked);
+    });
 
     els.entryList.addEventListener("click", async (event) => {
       const editButton = event.target.closest("[data-edit-entry-id]");
@@ -367,6 +419,7 @@ function bindEvents() {
         });
         syncEntryAcrossViews(payload.entry);
         await refreshStats(payload.stats);
+        void loadAiOverview(false);
         await loadManageEntries();
         showToast(`词条已标记为${STATUS_LABELS[button.dataset.status]}。`);
       } catch (error) {
@@ -466,6 +519,83 @@ async function refreshStats(existingStats = null) {
   els.statRejected.textContent = stats.rejected ?? 0;
 }
 
+function startAiOverviewPolling() {
+  if (!els.aiEnabledToggle || state.ai.pollTimer) return;
+  state.ai.pollTimer = window.setInterval(() => {
+    if (document.visibilityState === "hidden") return;
+    void loadAiOverview(false);
+  }, 8000);
+}
+
+async function loadAiOverview(showErrors = true) {
+  if (!els.aiEnabledToggle) return;
+  try {
+    const overview = await fetchJSON("/api/ai/overview");
+    applyAiOverview(overview);
+  } catch (error) {
+    if (showErrors) {
+      showToast(error.message, true);
+    }
+  }
+}
+
+function applyAiOverview(overview) {
+  state.ai.overview = overview;
+  if (!els.aiEnabledToggle) return;
+  els.aiEnabledToggle.checked = !!overview.enabled;
+  els.aiEnabledToggle.disabled = !overview.configured && !overview.enabled;
+  els.aiTrainingSummary.textContent =
+    `接受 ${overview.training.accepted} / 拒绝 ${overview.training.rejected}`;
+  const outdatedText = overview.queue.outdated ? `，旧规则 ${overview.queue.outdated}` : "";
+  els.aiQueueSummary.textContent =
+    `待跑 ${overview.queue.unlabeled}${outdatedText}，AI 接受 ${overview.queue.ai_accepted}，AI 拒绝 ${overview.queue.ai_rejected}`;
+  els.aiWorkerStatus.textContent = AI_WORKER_LABELS[overview.worker_status] || overview.worker_status;
+  els.aiModelSummary.textContent = overview.configured
+    ? `${overview.model || "已配置"} · prompt ${overview.prompt_version || "-"}`
+    : "未配置";
+  if (overview.enabled) {
+    els.aiPanelNote.textContent = "后台会持续为人工待定、尚未 AI 标注或 AI 规则已过期的词条生成辅助建议。";
+  } else if (!overview.configured) {
+    els.aiPanelNote.textContent = "请先在配置文件里补全 AI endpoint、model 等参数。";
+  } else {
+    els.aiPanelNote.textContent = overview.requirement_message;
+  }
+
+  if (overview.last_error) {
+    els.aiLastError.hidden = false;
+    els.aiLastError.textContent = `最近提示：${overview.last_error}`;
+  } else {
+    els.aiLastError.hidden = true;
+    els.aiLastError.textContent = "";
+  }
+}
+
+async function toggleAiEnabled(enabled) {
+  if (!els.aiEnabledToggle) return;
+  if (state.ai.loading) return;
+  state.ai.loading = true;
+  els.aiEnabledToggle.disabled = true;
+  try {
+    const payload = await postJSON("/api/ai/toggle", { enabled });
+    applyAiOverview(payload.overview);
+    if (payload.message) {
+      showToast(payload.message, !payload.overview.enabled && enabled);
+    } else {
+      showToast(payload.overview.enabled ? "已开启自动 AI 标注。" : "已关闭自动 AI 标注。");
+    }
+  } catch (error) {
+    els.aiEnabledToggle.checked = !enabled;
+    showToast(error.message, true);
+  } finally {
+    state.ai.loading = false;
+    if (state.ai.overview) {
+      els.aiEnabledToggle.disabled = !state.ai.overview.configured && !state.ai.overview.enabled;
+    } else {
+      els.aiEnabledToggle.disabled = false;
+    }
+  }
+}
+
 async function ensureReviewEntry(forceAdvanceIfEmpty = false) {
   if (!forceAdvanceIfEmpty && getCurrentReviewEntry()) {
     state.review.canGoBack = state.review.pointer > 0;
@@ -493,7 +623,9 @@ async function advanceReview(direction = "next", animate = true) {
   if (state.review.loading) return;
   state.review.loading = true;
   try {
-    const payload = await postJSON("/api/review/next", {});
+    const payload = await postJSON("/api/review/next", {
+      prefer_ai: state.review.preferAi,
+    });
     applyServerCurrentPayload(payload, {
       direction,
       appendIfNew: true,
@@ -589,9 +721,7 @@ function applyServerCurrentPayload(
   payload,
   { direction = "next", resetLocalHistory = false, appendIfNew = false, animate = true } = {}
 ) {
-  state.review.mode = payload.mode || "sequential";
-  storeReviewMode(state.review.mode);
-  updateReviewModeButtons();
+  state.review.mode = "random";
 
   if (payload.stats) {
     void refreshStats(payload.stats);
@@ -635,27 +765,6 @@ function applyServerCurrentPayload(
   }
 }
 
-function updateReviewModeButtons() {
-  if (!els.reviewModeButtons.length) return;
-  els.reviewModeButtons.forEach((button) => {
-    button.classList.toggle("active", button.dataset.reviewMode === state.review.mode);
-  });
-}
-
-async function setReviewMode(mode) {
-  if (!mode || mode === state.review.mode) return;
-  try {
-    const payload = await postJSON("/api/review/mode", { mode });
-    applyServerCurrentPayload(payload, { resetLocalHistory: true, animate: false });
-    if (!payload.current_entry) {
-      await advanceReview("next", false);
-    }
-    showToast(mode === "random" ? "已切换到随机模式。" : "已切换到顺序模式。");
-  } catch (error) {
-    showToast(error.message, true);
-  }
-}
-
 async function labelCurrent(status) {
   const current = getCurrentReviewEntry();
   if (!current) {
@@ -685,6 +794,7 @@ async function labelCurrent(status) {
     const payload = await postJSON("/api/review/label", {
       entry_id: current.id,
       status,
+      prefer_ai: state.review.preferAi,
     });
     syncEntryAcrossViews(payload.updated_entry, { renderReview: false });
     applyLabelResponse(payload);
@@ -703,6 +813,7 @@ function paintReviewEntry(entry) {
   if (!els.reviewCard) return;
   els.reviewStatus.textContent = STATUS_LABELS[entry.status];
   els.reviewStatus.className = `status-pill ${entry.status}`;
+  paintReviewAiStatus(entry);
   els.reviewWord.textContent = entry.phrase;
   els.reviewPinyin.textContent = entry.pinyin || "暂无拼音";
   els.reviewPinyinInput.value = entry.pinyin || "";
@@ -712,6 +823,9 @@ function paintReviewEntry(entry) {
   els.reviewWeight.textContent = `词频 ${entry.weight}`;
   els.reviewImportedAt.textContent = `导入 ${formatDate(entry.imported_at)}`;
   els.reviewLabeledAt.textContent = `标注 ${entry.labeled_at ? formatDate(entry.labeled_at) : "未标注"}`;
+  els.reviewAiScore.textContent =
+    entry.ai_score == null ? "AI分数 -" : `AI分数 ${Number(entry.ai_score).toFixed(2)}`;
+  updateReviewAiSuggestion(entry);
   updateReviewHistorySelect();
 }
 
@@ -722,6 +836,10 @@ function renderReviewEmpty(message = "", canGoBack = false, animate = true) {
   }
   els.reviewStatus.textContent = "待定";
   els.reviewStatus.className = "status-pill pending";
+  if (els.reviewAiStatus) {
+    els.reviewAiStatus.textContent = AI_STATUS_LABELS.unknown;
+    els.reviewAiStatus.className = "status-pill ai unknown";
+  }
   els.reviewWord.textContent = "当前没有待定词条";
   els.reviewPinyin.textContent = message || "可以去导入更多词库，或回到上一个已标注词条继续调整。";
   els.reviewPinyinInput.value = "";
@@ -731,7 +849,52 @@ function renderReviewEmpty(message = "", canGoBack = false, animate = true) {
   els.reviewWeight.textContent = "词频 -";
   els.reviewImportedAt.textContent = "导入时间 -";
   els.reviewLabeledAt.textContent = "标注时间 -";
+  if (els.reviewAiScore) {
+    els.reviewAiScore.textContent = "AI分数 -";
+  }
+  if (els.reviewAgreeAiButton) {
+    els.reviewAgreeAiButton.hidden = true;
+    els.reviewAgreeAiButton.disabled = true;
+  }
   updateReviewHistorySelect();
+}
+
+function paintReviewAiStatus(entry) {
+  if (!els.reviewAiStatus) return;
+  const aiLabel = entry.ai_label || "unknown";
+  els.reviewAiStatus.textContent = AI_STATUS_LABELS[aiLabel] || AI_STATUS_LABELS.unknown;
+  els.reviewAiStatus.className = `status-pill ai ${aiLabel}`;
+}
+
+function updateReviewAiSuggestion(entry) {
+  if (!els.reviewAgreeAiButton) return;
+  const aiLabel = entry.ai_label;
+  if (!aiLabel || aiLabel === "pending") {
+    els.reviewAgreeAiButton.hidden = true;
+    els.reviewAgreeAiButton.disabled = true;
+    els.reviewAgreeAiButton.textContent = "同意AI建议";
+    els.reviewAgreeAiButton.classList.remove("ai-accept", "ai-reject", "ai-pending");
+    return;
+  }
+
+  els.reviewAgreeAiButton.hidden = false;
+  els.reviewAgreeAiButton.classList.remove("ai-accept", "ai-reject", "ai-pending");
+  if (aiLabel === "accepted") {
+    els.reviewAgreeAiButton.classList.add("ai-accept");
+  } else if (aiLabel === "rejected") {
+    els.reviewAgreeAiButton.classList.add("ai-reject");
+  } else {
+    els.reviewAgreeAiButton.classList.add("ai-pending");
+  }
+  const actionLabel = STATUS_LABELS[aiLabel] || "接受";
+  const scoreText = entry.ai_score == null ? "" : ` · ${Number(entry.ai_score).toFixed(2)}`;
+  if (entry.status === aiLabel) {
+    els.reviewAgreeAiButton.disabled = true;
+    els.reviewAgreeAiButton.textContent = `已与AI建议一致 - ${actionLabel}${scoreText}`;
+  } else {
+    els.reviewAgreeAiButton.disabled = false;
+    els.reviewAgreeAiButton.textContent = `同意AI建议 - ${actionLabel}${scoreText}`;
+  }
 }
 
 function animateReviewCard(direction) {
@@ -757,6 +920,7 @@ async function loadManageEntries() {
       page: String(state.manage.page),
       page_size: String(state.manage.pageSize),
       status: state.manage.status,
+      ai_status: state.manage.aiStatus,
       q: state.manage.query,
     });
 
@@ -812,6 +976,7 @@ function renderEntryList(items) {
           <th class="col-pinyin">拼音</th>
           <th class="col-weight">词频</th>
           <th class="col-status">状态</th>
+          <th class="col-ai-status">AI 标注</th>
           <th class="col-time">导入时间</th>
           <th class="col-time">标注时间</th>
           <th class="col-actions">操作</th>
@@ -844,6 +1009,9 @@ function renderEntryRow(entry) {
       <td class="col-status">
         <span class="status-pill ${entry.status} compact">${STATUS_LABELS[entry.status]}</span>
       </td>
+      <td class="col-ai-status">
+        ${renderAiStatusCell(entry)}
+      </td>
       <td class="col-time">${escapeHtml(formatDate(entry.imported_at))}</td>
       <td class="col-time">${escapeHtml(entry.labeled_at ? formatDate(entry.labeled_at) : "未标注")}</td>
       <td class="col-actions">
@@ -855,6 +1023,16 @@ function renderEntryRow(entry) {
         </div>
       </td>
     </tr>
+  `;
+}
+
+function renderAiStatusCell(entry) {
+  const aiLabel = entry.ai_label || "unknown";
+  const scoreText = entry.ai_score == null ? "" : ` · ${Number(entry.ai_score).toFixed(2)}`;
+  return `
+    <span class="status-pill ai ${escapeHtml(aiLabel)} compact">
+      ${escapeHtml(AI_STATUS_LABELS[aiLabel] || AI_STATUS_LABELS.unknown)}${escapeHtml(scoreText)}
+    </span>
   `;
 }
 
@@ -875,9 +1053,7 @@ function updateSelectedCount() {
 }
 
 function applyLabelResponse(payload) {
-  state.review.mode = payload.mode || state.review.mode;
-  storeReviewMode(state.review.mode);
-  updateReviewModeButtons();
+  state.review.mode = "random";
   if (payload.stats) {
     void refreshStats(payload.stats);
   }
@@ -989,6 +1165,7 @@ async function saveBulkEditForm() {
 async function applyBulkResponse(payload, message) {
   payload.entries.forEach(syncEntryAcrossViews);
   await refreshStats(payload.stats);
+  void loadAiOverview(false);
   await loadManageEntries();
   showToast(message);
 }
@@ -1097,6 +1274,7 @@ async function saveEditForm() {
     const response = await postJSON(`/api/entries/${entryId}/update`, payload);
     syncEntryAcrossViews(response.entry);
     await refreshStats(response.stats);
+    void loadAiOverview(false);
     await loadManageEntries();
     closeEditDialog();
     showToast("词条信息已更新。");
@@ -1136,8 +1314,9 @@ async function updateExportCount() {
 
   try {
     const params = new URLSearchParams({ statuses: statuses.join(",") });
+    params.set("include_ai_assist", els.includeAiAssist?.checked ? "1" : "0");
     const payload = await fetchJSON(`/api/export/count?${params.toString()}`);
-    els.exportCountNote.textContent = `当前选择将导出 ${payload.count} 条词条。`;
+    els.exportCountNote.textContent = `当前选择将导出 ${payload.count} 条词条${els.includeAiAssist?.checked ? "（含 AI 辅助）" : ""}。`;
   } catch (error) {
     els.exportCountNote.textContent = `无法计算导出数量：${error.message}`;
   }

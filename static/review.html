@@ -2,8 +2,15 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#f6efe3" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="词库标注器" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <title>筛词 - Rime Word Marker</title>
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/icons/app-icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/icons/app-icon-180.png" />
     <link rel="stylesheet" href="/css/styles.css" />
   </head>
   <body data-page="review">
@@ -43,10 +50,10 @@
                 </ul>
               </div>
             </details>
-            <div class="mode-switch" id="reviewModeSwitch">
-              <button class="mode-chip" type="button" data-review-mode="sequential">顺序模式</button>
-              <button class="mode-chip" type="button" data-review-mode="random">随机模式</button>
-            </div>
+            <label class="switch-field review-prefer-ai-field">
+              <input type="checkbox" id="reviewPreferAiToggle" />
+              <span>优先 AI 已标注</span>
+            </label>
             <details class="history-jump" id="reviewHistoryMenu">
               <summary class="ghost-button history-trigger">历史 <span class="history-caret">▾</span></summary>
               <div class="history-dropdown" id="reviewHistoryDropdown">
@@ -58,7 +65,10 @@
 
         <div class="review-stage">
           <article class="review-card" id="reviewCard">
-            <div class="status-pill pending" id="reviewStatus">待定</div>
+            <div class="review-status-row">
+              <div class="status-pill pending" id="reviewStatus">待定</div>
+              <div class="status-pill ai unknown" id="reviewAiStatus">AI 未标注</div>
+            </div>
             <div class="review-word" id="reviewWord">准备开始…</div>
             <div class="review-pinyin" id="reviewPinyin">导入词库后即可进入连续筛词。</div>
             <form class="review-pinyin-editor" id="reviewPinyinForm">
@@ -75,6 +85,7 @@
               <span id="reviewWeight">词频 -</span>
               <span id="reviewImportedAt">导入时间 -</span>
               <span id="reviewLabeledAt">标注时间 -</span>
+              <span id="reviewAiScore">AI分数 -</span>
             </div>
           </article>
         </div>
@@ -90,6 +101,9 @@
             <span>拒绝</span>
           </button>
         </div>
+        <button class="decision-button ai-agree-button" type="button" id="reviewAgreeAiButton" hidden>
+          同意AI建议
+        </button>
       </section>
     </main>
 
