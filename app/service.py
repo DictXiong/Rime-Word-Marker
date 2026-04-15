@@ -1675,22 +1675,29 @@ class WordService:
         exclude_ids: list[int],
         prefer_ai: bool = False,
     ) -> sqlite3.Row | None:
+        conditions: list[tuple[str, list[Any]]] = []
         if prefer_ai:
+            conditions.extend(
+                [
+                    ("status = ? AND ai_label = ?", [PENDING, PENDING]),
+                    ("status = ? AND ai_label IN (?, ?)", [PENDING, ACCEPTED, REJECTED]),
+                ]
+            )
+        else:
+            conditions.append(("status = ? AND ai_label IS NULL", [PENDING]))
+
+        conditions.append(("status = ?", [PENDING]))
+
+        for condition_sql, condition_parameters in conditions:
             row = self._get_random_pending_row_for_condition(
                 connection,
                 exclude_ids,
-                "status = ? AND ai_label IS NOT NULL",
-                [PENDING],
+                condition_sql,
+                condition_parameters,
             )
             if row is not None:
                 return row
-
-        return self._get_random_pending_row_for_condition(
-            connection,
-            exclude_ids,
-            "status = ?",
-            [PENDING],
-        )
+        return None
 
     def _get_random_pending_row_for_condition(
         self,

@@ -11,6 +11,7 @@
     "batch_size": 24,
     "examples_per_class": 768,
     "candidate_mode": "sequential",
+    "retry_extreme_batches": false,
     "max_tokens": null
   }
 }

@@ -47,3 +47,28 @@ class ConfigTestCase(TestCase):
 
         self.assertFalse(disabled.verbose)
         self.assertTrue(enabled.verbose)
+
+    def test_ai_retry_extreme_batches_defaults_to_disabled(self) -> None:
+        ai_config = _load_ai_config(
+            {
+                "ai": {
+                    "endpoint": "http://example.test/v1",
+                    "model": "demo-model",
+                }
+            }
+        )
+
+        self.assertFalse(ai_config.retry_extreme_batches)
+
+    def test_ai_retry_extreme_batches_can_be_enabled(self) -> None:
+        ai_config = _load_ai_config(
+            {
+                "ai": {
+                    "endpoint": "http://example.test/v1",
+                    "model": "demo-model",
+                    "retry_extreme_batches": True,
+                }
+            }
+        )
+
+        self.assertTrue(ai_config.retry_extreme_batches)

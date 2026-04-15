@@ -552,7 +552,7 @@ function applyAiOverview(overview) {
     `接受 ${overview.training.accepted} / 拒绝 ${overview.training.rejected}`;
   const outdatedText = overview.queue.outdated ? `，旧规则 ${overview.queue.outdated}` : "";
   els.aiQueueSummary.textContent =
-    `待跑 ${overview.queue.unlabeled}${outdatedText}，AI 接受 ${overview.queue.ai_accepted}，AI 拒绝 ${overview.queue.ai_rejected}`;
+    `待跑 ${overview.queue.unlabeled}${outdatedText}，待定 ${overview.queue.ai_pending}，接受 ${overview.queue.ai_accepted}，拒绝 ${overview.queue.ai_rejected}`;
   els.aiWorkerStatus.textContent = AI_WORKER_LABELS[overview.worker_status] || overview.worker_status;
   els.aiModelSummary.textContent = overview.configured
     ? `${overview.model || "已配置"} · prompt ${overview.prompt_version || "-"}`

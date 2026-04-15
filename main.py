@@ -525,6 +525,7 @@ def _load_ai_config(config: dict, verbose: bool = False) -> AIConfig:
         examples_per_class=examples_per_class,
         max_tokens=max_tokens,
         candidate_mode=candidate_mode,
+        retry_extreme_batches=_load_bool(raw_ai.get("retry_extreme_batches"), False),
         verbose=verbose,
     )
 

@@ -34,6 +34,7 @@ class AIConfig:
     examples_per_class: int = DEFAULT_AI_EXAMPLES_PER_CLASS
     max_tokens: int = DEFAULT_AI_MAX_TOKENS
     candidate_mode: str = DEFAULT_AI_CANDIDATE_MODE
+    retry_extreme_batches: bool = False
     verbose: bool = False
     prompt_version: str = DEFAULT_AI_PROMPT_VERSION
 
@@ -359,6 +360,7 @@ class AIAnnotationWorker:
             "examples_per_class": self.config.examples_per_class,
             "max_tokens": self.config.max_tokens,
             "candidate_mode": self.config.candidate_mode,
+            "retry_extreme_batches": self.config.retry_extreme_batches,
             "verbose": self.config.verbose,
         }
 
@@ -415,7 +417,10 @@ class AIAnnotationWorker:
         self.service.update_ai_runtime_state("running", last_error="")
         predictions = self.client.annotate_batch(examples, batch["items"])
         label_counts = _summarize_predictions(predictions)
-        if _is_extreme_prediction_batch(label_counts, len(batch["items"])):
+        if self.config.retry_extreme_batches and _is_extreme_prediction_batch(
+            label_counts,
+            len(batch["items"]),
+        ):
             _log(
                 "[AI] extreme batch detected; retrying once "
                 f"input={len(batch['items'])} "

@@ -258,7 +258,11 @@ class AIAnnotationWorkerTestCase(TestCase):
         service.apply_ai_annotations.return_value = 2
         worker = AIAnnotationWorker(
             service,
-            AIConfig(endpoint="http://example.test/v1", model="demo-model"),
+            AIConfig(
+                endpoint="http://example.test/v1",
+                model="demo-model",
+                retry_extreme_batches=True,
+            ),
         )
 
         with mock.patch.object(
@@ -276,6 +280,42 @@ class AIAnnotationWorkerTestCase(TestCase):
         service.apply_ai_annotations.assert_called_once_with(
             service.get_ai_batch_candidates.return_value["items"],
             [{"id": 1, "score": 0.9}, {"id": 2, "score": 0.1}],
+            model_name="demo-model",
+            prompt_version="4.0",
+            next_scan_id=2,
+        )
+
+    def test_run_once_does_not_retry_extreme_batch_by_default(self) -> None:
+        service = mock.Mock()
+        service.get_ai_overview.return_value = {
+            "enabled": True,
+            "worker_status": "idle",
+            "training": {"sufficient": True},
+        }
+        service.get_ai_batch_candidates.return_value = {
+            "items": [{"id": 1, "phrase": "程序员"}, {"id": 2, "phrase": "词库"}],
+            "next_scan_id": 2,
+        }
+        service.sample_ai_training_examples.return_value = [{"phrase": "示例", "label": "accepted"}]
+        service.apply_ai_annotations.return_value = 2
+        worker = AIAnnotationWorker(
+            service,
+            AIConfig(endpoint="http://example.test/v1", model="demo-model"),
+        )
+        predictions = [{"id": 1, "score": 0.9}, {"id": 2, "score": 0.91}]
+
+        with mock.patch.object(
+            worker.client,
+            "annotate_batch",
+            return_value=predictions,
+        ) as annotate_batch, mock.patch("builtins.print"):
+            result = worker._run_once()
+
+        self.assertTrue(result)
+        self.assertEqual(annotate_batch.call_count, 1)
+        service.apply_ai_annotations.assert_called_once_with(
+            service.get_ai_batch_candidates.return_value["items"],
+            predictions,
             model_name="demo-model",
             prompt_version="4.0",
             next_scan_id=2,

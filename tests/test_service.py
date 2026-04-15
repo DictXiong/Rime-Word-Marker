@@ -281,6 +281,53 @@ class WordServiceTestCase(TestCase):
 
         self.assertEqual(preferred["current_entry"]["phrase"], "乙")
 
+    def test_review_without_ai_preference_prioritizes_unlabeled_entries(self) -> None:
+        with mock.patch("app.service.transliterate_phrase", side_effect=["jiǎ", "yǐ", "bǐng"]):
+            self.service.import_text("甲\n乙\n丙")
+
+        entries = {
+            item["phrase"]: item
+            for item in self.service.list_entries(page=1, page_size=10)["items"]
+        }
+        self.service.apply_ai_annotations(
+            [entries["乙"]],
+            [{"id": entries["乙"]["id"], "score": 0.91}],
+            model_name="demo-model",
+            prompt_version="demo-v1",
+            next_scan_id=entries["乙"]["id"],
+        )
+
+        with mock.patch("app.service.random.randint", return_value=entries["乙"]["id"]):
+            preferred = self.service.advance_review(prefer_ai=False)
+
+        self.assertEqual(preferred["current_entry"]["phrase"], "丙")
+
+    def test_review_ai_preference_prioritizes_ai_pending_before_ai_decisions(self) -> None:
+        with mock.patch("app.service.transliterate_phrase", side_effect=["jiǎ", "yǐ", "bǐng"]):
+            self.service.import_text("甲\n乙\n丙")
+
+        entries = {
+            item["phrase"]: item
+            for item in self.service.list_entries(page=1, page_size=10)["items"]
+        }
+        ordered_entries = [entries["甲"], entries["乙"], entries["丙"]]
+        self.service.apply_ai_annotations(
+            ordered_entries,
+            [
+                {"id": entries["甲"]["id"], "score": 0.91},
+                {"id": entries["乙"]["id"], "score": 0.5},
+                {"id": entries["丙"]["id"], "score": 0.1},
+            ],
+            model_name="demo-model",
+            prompt_version="demo-v1",
+            next_scan_id=entries["丙"]["id"],
+        )
+
+        with mock.patch("app.service.random.randint", return_value=entries["甲"]["id"]):
+            preferred = self.service.advance_review(prefer_ai=True)
+
+        self.assertEqual(preferred["current_entry"]["phrase"], "乙")
+
     def test_update_status_tracks_labeled_time(self) -> None:
         with mock.patch("app.service.transliterate_phrase", return_value="ce shi"):
             self.service.import_text("测试")

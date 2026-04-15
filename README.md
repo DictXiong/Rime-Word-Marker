@@ -101,6 +101,7 @@ http://127.0.0.1:8000
     "batch_size": 24,
     "examples_per_class": 768,
     "candidate_mode": "sequential",
+    "retry_extreme_batches": false,
     "max_tokens": null
   }
 }
@@ -169,8 +170,8 @@ cp config.example.json config.json
 
 ## 审核页说明
 
-- 使用随机取词，避免长时间卡在相邻词条
-- 可开启“优先 AI 已标注”，优先审核已有 AI 建议的待定词条
+- 使用随机取词，默认优先抽取尚未 AI 标注的待定词条
+- 可开启“优先 AI 已标注”，优先级为 `AI 待定` > `AI 接受 / AI 拒绝` > 普通待定词条
 - 支持浏览器本地历史跳转
 - 支持直接编辑当前词条拼音
 - 支持显示 AI 建议状态与 AI 分数
@@ -200,6 +201,7 @@ cp config.example.json config.json
 - AI few-shot 只采样人工接受 / 拒绝样本，并会额外优先加入人工结果与旧 AI 结果不一致的 hard examples
 - few-shot 样本会在服务进程内缓存，并在人工标注或词条修改后自动失效
 - `ai.candidate_mode` 可设为 `sequential` 或 `random`，用于控制后台 AI 队列顺序抽取或随机抽取
+- `ai.retry_extreme_batches` 默认关闭；打开后，若整批 AI 结果全为接受或全为拒绝，会自动重跑一次
 - 如果 AI 输出被 `max_tokens` 截断，会先临时提高 `max_tokens` 重试，再自动拆批重试
 - 顶层 `verbose` 可开启详细日志；AI 日志会打印请求 payload 与响应内容，但不会打印 API key
 - prompt 版本由代码内部维护，不从配置文件读取
