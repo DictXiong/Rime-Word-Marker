@@ -233,9 +233,7 @@ function bindEvents() {
       await fillReviewPinyinFromPhrase();
     });
     els.reviewAgreeAiButton?.addEventListener("click", async () => {
-      const current = getCurrentReviewEntry();
-      if (!current?.ai_label || current.ai_label === "pending") return;
-      await labelCurrent(current.ai_label);
+      await agreeWithAiSuggestion();
     });
     if (els.reviewPreferAiToggle) {
       els.reviewPreferAiToggle.checked = state.review.preferAi;
@@ -281,7 +279,13 @@ function bindEvents() {
     if (["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName)) return;
 
     const key = event.key;
-    if (key === "ArrowLeft" || ["j", "J", "1", "a", "A"].includes(key)) {
+    if (key === " " || key === "Spacebar" || event.code === "Space") {
+      if (canAgreeWithAiSuggestion()) {
+        event.preventDefault();
+        if (event.repeat) return;
+        await agreeWithAiSuggestion();
+      }
+    } else if (key === "ArrowLeft" || ["j", "J", "1", "a", "A"].includes(key)) {
       event.preventDefault();
       await labelCurrent("accepted");
     } else if (key === "ArrowDown" || ["k", "K", "2", "s", "S"].includes(key)) {
@@ -802,6 +806,20 @@ async function labelCurrent(status) {
   } catch (error) {
     showToast(error.message, true);
   }
+}
+
+async function agreeWithAiSuggestion() {
+  const current = getCurrentReviewEntry();
+  if (!canAgreeWithAiSuggestion(current)) return;
+  await labelCurrent(current.ai_label);
+}
+
+function canAgreeWithAiSuggestion(entry = getCurrentReviewEntry()) {
+  const actionableLabels = ["accepted", "rejected"];
+  return (
+    actionableLabels.includes(entry?.ai_label) &&
+    entry.status !== entry.ai_label
+  );
 }
 
 function renderReviewEntry(entry, direction = "next") {
