@@ -11,6 +11,7 @@
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" href="/icons/app-icon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="/icons/app-icon-180.png" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/lxgw-wenkai-screen-webfont@1.7.0/style.css" />
     <link rel="stylesheet" href="/css/styles.css" />
   </head>
   <body data-page="manage">
@@ -114,6 +115,22 @@
             <div class="ai-panel-item"><span>AI 队列</span><strong id="aiQueueSummary">-</strong></div>
             <div class="ai-panel-item"><span>后台状态</span><strong id="aiWorkerStatus">-</strong></div>
             <div class="ai-panel-item"><span>模型</span><strong id="aiModelSummary">-</strong></div>
+          </div>
+          <div class="ai-progress-panel" id="aiProgressPanel" hidden>
+            <div class="ai-progress-head">
+              <strong id="aiProgressTitle">AI 标注进度</strong>
+              <span id="aiProgressMeta">-</span>
+            </div>
+            <div class="ai-progress-bar" aria-label="AI 标注进度">
+              <span class="ai-progress-done" id="aiProgressDone"></span>
+              <span class="ai-progress-unlabeled" id="aiProgressUnlabeled"></span>
+              <span class="ai-progress-outdated" id="aiProgressOutdated"></span>
+            </div>
+            <div class="ai-progress-legend">
+              <span><i class="legend-done"></i>当前 prompt 已覆盖</span>
+              <span><i class="legend-unlabeled"></i>未 AI 标注</span>
+              <span><i class="legend-outdated"></i>旧 prompt 待更新</span>
+            </div>
           </div>
           <p class="ai-panel-error" id="aiLastError" hidden></p>
         </section>

@@ -83,6 +83,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   await refreshStats();
 
   if (els.reviewCard) {
+    bindReviewWordAutoFit();
     await ensureReviewEntry(true);
   }
 
@@ -149,6 +150,7 @@ function cacheElements() {
   els.importText = document.getElementById("importText");
   els.importOverwritePinyin = document.getElementById("importOverwritePinyin");
   els.importOverwriteWeight = document.getElementById("importOverwriteWeight");
+  els.importMarkAccepted = document.getElementById("importMarkAccepted");
   els.importMessage = document.getElementById("importMessage");
 
   els.exportForm = document.getElementById("exportForm");
@@ -183,6 +185,12 @@ function cacheElements() {
   els.aiQueueSummary = document.getElementById("aiQueueSummary");
   els.aiWorkerStatus = document.getElementById("aiWorkerStatus");
   els.aiModelSummary = document.getElementById("aiModelSummary");
+  els.aiProgressPanel = document.getElementById("aiProgressPanel");
+  els.aiProgressTitle = document.getElementById("aiProgressTitle");
+  els.aiProgressMeta = document.getElementById("aiProgressMeta");
+  els.aiProgressDone = document.getElementById("aiProgressDone");
+  els.aiProgressUnlabeled = document.getElementById("aiProgressUnlabeled");
+  els.aiProgressOutdated = document.getElementById("aiProgressOutdated");
   els.aiLastError = document.getElementById("aiLastError");
 
   els.entryEditDialog = document.getElementById("entryEditDialog");
@@ -307,6 +315,7 @@ function bindEvents() {
       const text = els.importText.value.trim();
       const overwritePinyin = !!els.importOverwritePinyin?.checked;
       const overwriteWeight = els.importOverwriteWeight?.checked !== false;
+      const markAccepted = !!els.importMarkAccepted?.checked;
 
       if (!file && !text) {
         showMessage("请先选择文件或粘贴导入内容。");
@@ -318,6 +327,7 @@ function bindEvents() {
         const importParams = new URLSearchParams({
           overwrite_pinyin: overwritePinyin ? "1" : "0",
           overwrite_weight: overwriteWeight ? "1" : "0",
+          mark_accepted: markAccepted ? "1" : "0",
         });
         const payload = file
           ? await postRawText(`/api/import-file?${importParams.toString()}`, file)
@@ -325,12 +335,16 @@ function bindEvents() {
               text,
               overwrite_pinyin: overwritePinyin,
               overwrite_weight: overwriteWeight,
+              mark_accepted: markAccepted,
             });
         const result = payload.result;
         const updateSummary = result.updated
           ? `，更新 ${result.updated} 条重复词条（拼音 ${result.updated_pinyin}，词频 ${result.updated_weight}）`
           : "";
-        const summary = `词库包含 ${result.parsed} 条，其中 ${result.inserted} 条新词条${updateSummary}，${result.accepted_existing} 条已被标注为接受，${result.rejected_existing} 条已被标注为拒绝。`;
+        const acceptedSummary = result.accepted_marked
+          ? `，本次标注接受 ${result.accepted_marked} 条`
+          : "";
+        const summary = `词库包含 ${result.parsed} 条，其中 ${result.inserted} 条新词条${updateSummary}${acceptedSummary}，${result.accepted_existing} 条已被标注为接受，${result.rejected_existing} 条已被标注为拒绝。`;
         showMessage(summary);
         els.importText.value = "";
         els.importFile.value = "";
@@ -568,11 +582,12 @@ function applyAiOverview(overview) {
     `接受 ${overview.training.accepted} / 拒绝 ${overview.training.rejected}`;
   const outdatedText = overview.queue.outdated ? `，旧规则 ${overview.queue.outdated}` : "";
   els.aiQueueSummary.textContent =
-    `待跑 ${overview.queue.unlabeled}${outdatedText}，待定 ${overview.queue.ai_pending}，接受 ${overview.queue.ai_accepted}，拒绝 ${overview.queue.ai_rejected}`;
+    `待跑 ${overview.queue.remaining ?? overview.queue.unlabeled}${outdatedText}，待定 ${overview.queue.ai_pending}，接受 ${overview.queue.ai_accepted}，拒绝 ${overview.queue.ai_rejected}`;
   els.aiWorkerStatus.textContent = AI_WORKER_LABELS[overview.worker_status] || overview.worker_status;
   els.aiModelSummary.textContent = overview.configured
     ? `${overview.model || "已配置"} · prompt ${overview.prompt_version || "-"}`
     : "未配置";
+  renderAiProgress(overview);
   if (overview.enabled) {
     els.aiPanelNote.textContent = "后台会持续为人工待定、尚未 AI 标注或 AI 规则已过期的词条生成辅助建议。";
   } else if (!overview.configured) {
@@ -588,6 +603,59 @@ function applyAiOverview(overview) {
     els.aiLastError.hidden = true;
     els.aiLastError.textContent = "";
   }
+}
+
+function renderAiProgress(overview) {
+  if (!els.aiProgressPanel) return;
+  const progress = overview.progress;
+  if (!overview.enabled || !progress) {
+    els.aiProgressPanel.hidden = true;
+    return;
+  }
+
+  els.aiProgressPanel.hidden = false;
+  const total = Math.max(0, Number(progress.total || 0));
+  const current = Math.max(0, Number(progress.current || 0));
+  const unlabeled = Math.max(0, Number(progress.unlabeled || 0));
+  const outdated = Math.max(0, Number(progress.outdated || 0));
+  const donePct = total ? clampPercent((current / total) * 100) : 0;
+  const unlabeledPct = total ? clampPercent((unlabeled / total) * 100) : 0;
+  const outdatedPct = total ? clampPercent((outdated / total) * 100) : 0;
+  const coveredPct = total ? Math.round((current / total) * 100) : 100;
+  els.aiProgressDone.style.width = `${donePct}%`;
+  els.aiProgressUnlabeled.style.width = `${unlabeledPct}%`;
+  els.aiProgressOutdated.style.width = `${outdatedPct}%`;
+  els.aiProgressTitle.textContent = `当前覆盖 ${coveredPct}%`;
+
+  const rateText =
+    progress.rate_per_minute == null
+      ? "速度收集中"
+      : `速度 ${Number(progress.rate_per_minute).toFixed(1)} 条/分钟`;
+  const etaText =
+    progress.eta_seconds == null
+      ? "预计 -"
+      : `预计 ${formatDuration(progress.eta_seconds)}`;
+  els.aiProgressMeta.textContent =
+    `未标注 ${unlabeled} · 旧 prompt ${outdated} · ${rateText} · ${etaText}`;
+}
+
+function clampPercent(value) {
+  return Math.min(100, Math.max(0, Number.isFinite(value) ? value : 0));
+}
+
+function formatDuration(totalSeconds) {
+  const seconds = Math.max(0, Number(totalSeconds) || 0);
+  if (seconds < 60) return `${Math.ceil(seconds)} 秒`;
+  const minutes = Math.ceil(seconds / 60);
+  if (minutes < 60) return `${minutes} 分钟`;
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  if (hours < 24) {
+    return remainingMinutes ? `${hours} 小时 ${remainingMinutes} 分钟` : `${hours} 小时`;
+  }
+  const days = Math.floor(hours / 24);
+  const remainingHours = hours % 24;
+  return remainingHours ? `${days} 天 ${remainingHours} 小时` : `${days} 天`;
 }
 
 async function toggleAiEnabled(enabled) {
@@ -843,6 +911,54 @@ function renderReviewEntry(entry, direction = "next") {
   paintReviewEntry(entry);
 }
 
+function bindReviewWordAutoFit() {
+  window.addEventListener("resize", scheduleReviewWordFit);
+  if (document.fonts?.ready) {
+    document.fonts.ready.then(scheduleReviewWordFit).catch(() => {});
+  }
+}
+
+function scheduleReviewWordFit() {
+  if (!els.reviewWord) return;
+  window.cancelAnimationFrame(scheduleReviewWordFit.frameId || 0);
+  scheduleReviewWordFit.frameId = window.requestAnimationFrame(fitReviewWordToOneLine);
+}
+
+function fitReviewWordToOneLine() {
+  const word = els.reviewWord;
+  const card = els.reviewCard;
+  if (!word || !card) return;
+
+  word.style.fontSize = "";
+  word.style.transform = "";
+
+  const cardStyle = window.getComputedStyle(card);
+  const horizontalPadding =
+    (Number.parseFloat(cardStyle.paddingLeft) || 0) +
+    (Number.parseFloat(cardStyle.paddingRight) || 0);
+  const availableWidth = Math.max(1, card.clientWidth - horizontalPadding);
+  if (word.scrollWidth <= availableWidth) return;
+
+  const computed = window.getComputedStyle(word);
+  const maxFontSize = Number.parseFloat(computed.fontSize) || 96;
+  let low = 20;
+  let high = maxFontSize;
+  for (let index = 0; index < 14; index += 1) {
+    const mid = (low + high) / 2;
+    word.style.fontSize = `${mid}px`;
+    if (word.scrollWidth > availableWidth) {
+      high = mid;
+    } else {
+      low = mid;
+    }
+  }
+
+  word.style.fontSize = `${low}px`;
+  if (word.scrollWidth > availableWidth) {
+    word.style.transform = `scaleX(${availableWidth / word.scrollWidth})`;
+  }
+}
+
 function paintReviewEntry(entry) {
   if (!els.reviewCard) return;
   els.reviewStatus.textContent = STATUS_LABELS[entry.status];
@@ -861,6 +977,7 @@ function paintReviewEntry(entry) {
     entry.ai_score == null ? "AI分数 -" : `AI分数 ${Number(entry.ai_score).toFixed(2)}`;
   updateReviewAiSuggestion(entry);
   updateReviewHistorySelect();
+  scheduleReviewWordFit();
 }
 
 function renderReviewEmpty(message = "", canGoBack = false, animate = true) {
@@ -892,6 +1009,7 @@ function renderReviewEmpty(message = "", canGoBack = false, animate = true) {
     els.reviewAgreeAiButton.disabled = true;
   }
   updateReviewHistorySelect();
+  scheduleReviewWordFit();
 }
 
 function paintReviewAiStatus(entry) {

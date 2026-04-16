@@ -33,6 +33,8 @@ AI_SETTING_WORKER_STATUS = "ai_worker_status"
 AI_SETTING_LAST_SCAN_ID = "ai_last_scan_id"
 AI_SETTING_LAST_ERROR = "ai_last_error"
 AI_SETTING_LAST_RUN_AT = "ai_last_run_at"
+AI_SETTING_PROGRESS_SAMPLES = "ai_progress_samples"
+AI_PROGRESS_SAMPLE_WINDOW_SECONDS = 600
 AI_WORKER_DISABLED = "disabled"
 AI_WORKER_IDLE = "idle"
 AI_WORKER_RUNNING = "running"
@@ -143,6 +145,7 @@ class WordService:
             self._ensure_setting(connection, AI_SETTING_LAST_SCAN_ID, "0")
             self._ensure_setting(connection, AI_SETTING_LAST_ERROR, "")
             self._ensure_setting(connection, AI_SETTING_LAST_RUN_AT, "")
+            self._ensure_setting(connection, AI_SETTING_PROGRESS_SAMPLES, "[]")
             connection.commit()
 
     def import_text(
@@ -150,17 +153,20 @@ class WordService:
         raw_text: str,
         overwrite_pinyin: bool = False,
         overwrite_weight: bool = True,
+        mark_accepted: bool = False,
     ) -> dict[str, Any]:
         inserted = 0
         skipped = 0
         updated = 0
         updated_pinyin = 0
         updated_weight = 0
+        accepted_marked = 0
         parsed = 0
         accepted_existing = 0
         rejected_existing = 0
         imported_at = self._now()
         in_yaml_header = False
+        accepted_marked_phrases: set[str] = set()
         parsed_entries: list[tuple[int, str, str, int, bool, bool]] = []
 
         for line_number, raw_line in enumerate(raw_text.splitlines(), start=1):
@@ -190,14 +196,24 @@ class WordService:
 
             for line_number, phrase, pinyin, weight, has_pinyin, has_weight in parsed_entries:
                 if phrase not in known_entries:
+                    next_status = ACCEPTED if mark_accepted else PENDING
+                    next_labeled_at = imported_at if mark_accepted else None
                     try:
                         cursor.execute(
                             """
                             INSERT INTO entries (
                                 phrase, pinyin, weight, weight_defined, status, imported_at, labeled_at
-                            ) VALUES (?, ?, ?, ?, ?, ?, NULL)
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?)
                             """,
-                            (phrase, pinyin, weight, 1 if has_weight else 0, PENDING, imported_at),
+                            (
+                                phrase,
+                                pinyin,
+                                weight,
+                                1 if has_weight else 0,
+                                next_status,
+                                imported_at,
+                                next_labeled_at,
+                            ),
                         )
                     except RuntimeError:
                         raise
@@ -205,10 +221,13 @@ class WordService:
                         raise ValueError(f"第 {line_number} 行导入失败：{exc}") from exc
                     inserted += 1
                     known_entries[phrase] = {
-                        "status": PENDING,
+                        "status": next_status,
                         "weight": weight,
                         "weight_defined": has_weight,
                     }
+                    if mark_accepted and phrase not in accepted_marked_phrases:
+                        accepted_marked += 1
+                        accepted_marked_phrases.add(phrase)
                 else:
                     skipped += 1
                     current = known_entries.get(phrase, {})
@@ -227,6 +246,11 @@ class WordService:
                         update_fields.append("weight = ?")
                         update_values.append(weight)
                         update_fields.append("weight_defined = 1")
+                    if mark_accepted:
+                        update_fields.append("status = ?")
+                        update_values.append(ACCEPTED)
+                        update_fields.append("labeled_at = ?")
+                        update_values.append(imported_at)
 
                     if update_fields:
                         try:
@@ -249,8 +273,16 @@ class WordService:
                             updated_weight += 1
                             current["weight"] = weight
                             current["weight_defined"] = True
+                        if mark_accepted:
+                            current["status"] = ACCEPTED
+                            if phrase not in accepted_marked_phrases:
+                                accepted_marked += 1
+                                accepted_marked_phrases.add(phrase)
 
             connection.commit()
+
+        if accepted_marked:
+            self._invalidate_ai_training_examples_cache()
 
         return {
             "parsed": parsed,
@@ -259,6 +291,7 @@ class WordService:
             "updated": updated,
             "updated_pinyin": updated_pinyin,
             "updated_weight": updated_weight,
+            "accepted_marked": accepted_marked,
             "accepted_existing": accepted_existing,
             "rejected_existing": rejected_existing,
             "imported_at": imported_at,
@@ -415,6 +448,7 @@ class WordService:
                     AI_SETTING_LAST_SCAN_ID,
                     AI_SETTING_LAST_ERROR,
                     AI_SETTING_LAST_RUN_AT,
+                    AI_SETTING_PROGRESS_SAMPLES,
                 ],
             )
             training_row = connection.execute(
@@ -432,11 +466,7 @@ class WordService:
                     SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) AS pending_total,
                     SUM(
                         CASE
-                            WHEN status = ?
-                                AND (
-                                    ai_label IS NULL
-                                    OR (? != '' AND (ai_prompt_version IS NULL OR ai_prompt_version != ?))
-                                )
+                            WHEN status = ? AND ai_label IS NULL
                                 THEN 1
                             ELSE 0
                         END
@@ -459,8 +489,6 @@ class WordService:
                 (
                     PENDING,
                     PENDING,
-                    current_prompt_version,
-                    current_prompt_version,
                     PENDING,
                     current_prompt_version,
                     current_prompt_version,
@@ -475,6 +503,19 @@ class WordService:
 
         accepted_count = int(training_row["accepted_count"] or 0)
         rejected_count = int(training_row["rejected_count"] or 0)
+        pending_total = int(ai_row["pending_total"] or 0)
+        unlabeled_total = int(ai_row["unlabeled_total"] or 0)
+        outdated_total = int(ai_row["outdated_total"] or 0)
+        remaining_total = unlabeled_total + outdated_total
+        current_total = max(0, pending_total - remaining_total)
+        progress = self._build_ai_progress(
+            settings.get(AI_SETTING_PROGRESS_SAMPLES, "[]"),
+            total=pending_total,
+            current=current_total,
+            unlabeled=unlabeled_total,
+            outdated=outdated_total,
+            remaining=remaining_total,
+        )
         training_total = accepted_count + rejected_count
         sufficient = (
             training_total >= AI_MIN_TRAINING_TOTAL
@@ -499,13 +540,16 @@ class WordService:
                 "sufficient": sufficient,
             },
             "queue": {
-                "pending_total": int(ai_row["pending_total"] or 0),
-                "unlabeled": int(ai_row["unlabeled_total"] or 0),
-                "outdated": int(ai_row["outdated_total"] or 0),
+                "pending_total": pending_total,
+                "unlabeled": unlabeled_total,
+                "outdated": outdated_total,
+                "remaining": remaining_total,
+                "current": current_total,
                 "ai_pending": int(ai_row["ai_pending_total"] or 0),
                 "ai_accepted": int(ai_row["ai_accepted_total"] or 0),
                 "ai_rejected": int(ai_row["ai_rejected_total"] or 0),
             },
+            "progress": progress,
             "worker_status": worker_status,
             "last_scan_id": int(settings.get(AI_SETTING_LAST_SCAN_ID, "0") or 0),
             "last_error": settings.get(AI_SETTING_LAST_ERROR, ""),
@@ -515,6 +559,78 @@ class WordService:
                 rejected_count=rejected_count,
             ),
         }
+
+    def _build_ai_progress(
+        self,
+        raw_samples: str,
+        total: int,
+        current: int,
+        unlabeled: int,
+        outdated: int,
+        remaining: int,
+    ) -> dict[str, Any]:
+        samples = self._load_ai_progress_samples(raw_samples, now=self._now())
+        rate_per_minute: float | None = None
+        eta_seconds: int | None = None
+        if len(samples) >= 2:
+            first_time = datetime.fromisoformat(samples[0]["timestamp"])
+            last_time = datetime.fromisoformat(samples[-1]["timestamp"])
+            elapsed_seconds = max(0.0, (last_time - first_time).total_seconds())
+            updated_total = sum(int(sample["updated"]) for sample in samples)
+            if elapsed_seconds > 0 and updated_total > 0:
+                rate_per_minute = updated_total / (elapsed_seconds / 60)
+                if remaining > 0:
+                    eta_seconds = int(math.ceil(remaining / (rate_per_minute / 60)))
+
+        return {
+            "total": max(0, int(total)),
+            "current": max(0, int(current)),
+            "unlabeled": max(0, int(unlabeled)),
+            "outdated": max(0, int(outdated)),
+            "remaining": max(0, int(remaining)),
+            "rate_per_minute": rate_per_minute,
+            "eta_seconds": eta_seconds,
+            "sample_window_seconds": AI_PROGRESS_SAMPLE_WINDOW_SECONDS,
+        }
+
+    def _append_ai_progress_sample(
+        self,
+        raw_samples: str,
+        updated_count: int,
+        timestamp: str,
+    ) -> str:
+        samples = self._load_ai_progress_samples(raw_samples, now=timestamp)
+        samples.append({"timestamp": timestamp, "updated": max(0, int(updated_count))})
+        return json.dumps(samples[-200:], ensure_ascii=False)
+
+    @staticmethod
+    def _load_ai_progress_samples(raw_samples: str, now: str) -> list[dict[str, Any]]:
+        try:
+            parsed = json.loads(raw_samples or "[]")
+        except json.JSONDecodeError:
+            parsed = []
+        if not isinstance(parsed, list):
+            return []
+
+        try:
+            now_dt = datetime.fromisoformat(now)
+        except ValueError:
+            now_dt = datetime.now().astimezone()
+        cutoff = now_dt.timestamp() - AI_PROGRESS_SAMPLE_WINDOW_SECONDS
+        samples: list[dict[str, Any]] = []
+        for item in parsed:
+            if not isinstance(item, dict):
+                continue
+            try:
+                timestamp = str(item["timestamp"])
+                updated = int(item["updated"])
+                sample_dt = datetime.fromisoformat(timestamp)
+            except (KeyError, TypeError, ValueError):
+                continue
+            if sample_dt.timestamp() >= cutoff and updated > 0:
+                samples.append({"timestamp": timestamp, "updated": updated})
+        samples.sort(key=lambda sample: sample["timestamp"])
+        return samples
 
     def build_ai_training_requirement_message(
         self,
@@ -783,6 +899,18 @@ class WordService:
             self._set_setting(connection, AI_SETTING_LAST_RUN_AT, now)
             if updated_count:
                 self._set_setting(connection, AI_SETTING_LAST_ERROR, "")
+                self._set_setting(
+                    connection,
+                    AI_SETTING_PROGRESS_SAMPLES,
+                    self._append_ai_progress_sample(
+                        self._get_settings(connection, [AI_SETTING_PROGRESS_SAMPLES]).get(
+                            AI_SETTING_PROGRESS_SAMPLES,
+                            "[]",
+                        ),
+                        updated_count,
+                        now,
+                    ),
+                )
             connection.commit()
 
         return updated_count

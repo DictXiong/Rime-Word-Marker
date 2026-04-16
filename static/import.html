@@ -11,6 +11,7 @@
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" href="/icons/app-icon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="/icons/app-icon-180.png" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/lxgw-wenkai-screen-webfont@1.7.0/style.css" />
     <link rel="stylesheet" href="/css/styles.css" />
   </head>
   <body data-page="import">
@@ -60,12 +61,13 @@
               <div class="checkbox-grid">
                 <label><input type="checkbox" id="importOverwritePinyin" /> 覆盖拼音</label>
                 <label><input type="checkbox" id="importOverwriteWeight" checked /> 覆盖词频</label>
+                <label><input type="checkbox" id="importMarkAccepted" /> 全部接受</label>
               </div>
             </div>
 
             <button class="primary-button" type="submit">导入词库</button>
             <p class="form-note">
-              支持直接上传 Rime 风格词典文件，或手动粘贴内容。新词条缺失拼音会补全，缺失词频会设为 1；重复词条仅在导入行提供对应列且勾选覆盖时更新。
+              支持直接上传 Rime 风格词典文件，或手动粘贴内容。新词条缺失拼音会补全，缺失词频会设为 1；重复词条仅在导入行提供对应列且勾选覆盖时更新。勾选“全部接受”会把本次导入涉及的词条直接标注为接受。
             </p>
             <div class="message-box" id="importMessage"></div>
           </form>

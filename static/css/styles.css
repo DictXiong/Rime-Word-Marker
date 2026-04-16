@@ -17,7 +17,7 @@
   --radius-xl: 30px;
   --radius-lg: 22px;
   --radius-md: 16px;
-  --kai-font: "Kaiti SC", "STKaiti", "KaiTi", "BiauKai", "Songti SC", serif;
+  --kai-font: "Kaiti SC", "STKaiti", "KaiTi", "BiauKai", "LXGW WenKai Screen", "Songti SC", serif;
 }
 
 * {
@@ -533,7 +533,13 @@ textarea {
   font-weight: 800;
   font-family: var(--kai-font);
   letter-spacing: 0;
-  word-break: break-word;
+  display: inline-block;
+  max-width: 100%;
+  white-space: nowrap;
+  word-break: keep-all;
+  overflow-wrap: normal;
+  transform-origin: center center;
+  will-change: font-size, transform;
 }
 
 .review-weight-badge {
@@ -811,6 +817,82 @@ textarea {
   border-radius: 16px;
   background: rgba(188, 63, 50, 0.1);
   color: #9d3228;
+}
+
+.ai-progress-panel {
+  margin-top: 16px;
+  padding: 14px 16px;
+  border-radius: 18px;
+  background: rgba(255, 250, 243, 0.72);
+  border: 1px solid rgba(29, 29, 29, 0.08);
+}
+
+.ai-progress-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--ink);
+}
+
+.ai-progress-head span {
+  color: var(--muted);
+  font-size: 0.9rem;
+  text-align: right;
+}
+
+.ai-progress-bar {
+  display: flex;
+  height: 16px;
+  margin-top: 12px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(29, 29, 29, 0.06);
+  border: 1px solid rgba(29, 29, 29, 0.08);
+}
+
+.ai-progress-bar span {
+  display: block;
+  min-width: 0;
+  height: 100%;
+  transition: width 220ms ease;
+}
+
+.ai-progress-done,
+.legend-done {
+  background: var(--pending);
+}
+
+.ai-progress-unlabeled,
+.legend-unlabeled {
+  background: rgba(13, 103, 114, 0.18);
+}
+
+.ai-progress-outdated,
+.legend-outdated {
+  background: var(--accent);
+}
+
+.ai-progress-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.ai-progress-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ai-progress-legend i {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
 }
 
 .bulk-panel {
@@ -1480,6 +1562,15 @@ input[type="radio"] {
 
   .ai-panel-grid {
     grid-template-columns: 1fr;
+  }
+
+  .ai-progress-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .ai-progress-head span {
+    text-align: left;
   }
 
   .decision-button {

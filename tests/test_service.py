@@ -120,6 +120,29 @@ class WordServiceTestCase(TestCase):
         self.assertEqual(updated["ai_model"], "demo-model")
         self.assertEqual(updated["ai_prompt_version"], "demo-v1")
 
+    def test_import_can_mark_all_entries_as_accepted(self) -> None:
+        self.service.import_text("旧词\tjiu ci\t3")
+        old_entry = self.service.list_entries(page=1, page_size=10)["items"][0]
+        self.service.update_status(old_entry["id"], "rejected")
+
+        result = self.service.import_text(
+            "旧词\tjiu ci\t5\n新词\txin ci\t2",
+            mark_accepted=True,
+        )
+        entries = {
+            item["phrase"]: item
+            for item in self.service.list_entries(page=1, page_size=10)["items"]
+        }
+
+        self.assertEqual(result["inserted"], 1)
+        self.assertEqual(result["skipped"], 1)
+        self.assertEqual(result["accepted_marked"], 2)
+        self.assertEqual(entries["旧词"]["status"], "accepted")
+        self.assertEqual(entries["旧词"]["weight"], 5)
+        self.assertIsNotNone(entries["旧词"]["labeled_at"])
+        self.assertEqual(entries["新词"]["status"], "accepted")
+        self.assertIsNotNone(entries["新词"]["labeled_at"])
+
     def test_import_distinguishes_missing_weight_from_explicit_one(self) -> None:
         with mock.patch("app.service.transliterate_phrase", side_effect=["wèi dìng yì", "míng què"]):
             self.service.import_text("未定义\n明确\tmíng què\t1")
@@ -803,8 +826,10 @@ class WordServiceTestCase(TestCase):
 
         self.assertEqual(old_batch["items"], [])
         self.assertEqual([item["phrase"] for item in new_batch["items"]], ["甲", "乙"])
-        self.assertEqual(overview["queue"]["unlabeled"], 2)
+        self.assertEqual(overview["queue"]["unlabeled"], 0)
         self.assertEqual(overview["queue"]["outdated"], 2)
+        self.assertEqual(overview["queue"]["remaining"], 2)
+        self.assertEqual(overview["queue"]["current"], 0)
 
         self.service.update_status(entries["甲"]["id"], "accepted")
         pending_only_batch = self.service.get_ai_batch_candidates(
@@ -813,6 +838,62 @@ class WordServiceTestCase(TestCase):
         )
 
         self.assertEqual([item["phrase"] for item in pending_only_batch["items"]], ["乙"])
+
+    def test_ai_overview_reports_progress_speed_and_eta(self) -> None:
+        with mock.patch("app.service.transliterate_phrase", side_effect=["jiǎ", "yǐ", "bǐng"]):
+            self.service.import_text("甲\n乙\n丙")
+
+        entries = {
+            item["phrase"]: item
+            for item in self.service.list_entries(page=1, page_size=10)["items"]
+        }
+
+        with mock.patch.object(self.service, "_now", return_value="2026-04-16T00:00:00+08:00"):
+            self.service.apply_ai_annotations(
+                [entries["甲"]],
+                [{"id": entries["甲"]["id"], "score": 0.91}],
+                model_name="demo-model",
+                prompt_version="rules-v1",
+                next_scan_id=entries["甲"]["id"],
+            )
+        with mock.patch.object(self.service, "_now", return_value="2026-04-16T00:05:00+08:00"):
+            self.service.apply_ai_annotations(
+                [entries["乙"]],
+                [{"id": entries["乙"]["id"], "score": 0.18}],
+                model_name="demo-model",
+                prompt_version="rules-v1",
+                next_scan_id=entries["乙"]["id"],
+            )
+            overview = self.service.get_ai_overview(prompt_version="rules-v1")
+
+        self.assertEqual(overview["progress"]["total"], 3)
+        self.assertEqual(overview["progress"]["current"], 2)
+        self.assertEqual(overview["progress"]["unlabeled"], 1)
+        self.assertEqual(overview["progress"]["outdated"], 0)
+        self.assertEqual(overview["progress"]["remaining"], 1)
+        self.assertAlmostEqual(overview["progress"]["rate_per_minute"], 0.4)
+        self.assertEqual(overview["progress"]["eta_seconds"], 150)
+
+    def test_ai_overview_returns_null_speed_until_enough_samples_exist(self) -> None:
+        with mock.patch("app.service.transliterate_phrase", side_effect=["jiǎ", "yǐ"]):
+            self.service.import_text("甲\n乙")
+
+        entries = {
+            item["phrase"]: item
+            for item in self.service.list_entries(page=1, page_size=10)["items"]
+        }
+        with mock.patch.object(self.service, "_now", return_value="2026-04-16T00:00:00+08:00"):
+            self.service.apply_ai_annotations(
+                [entries["甲"]],
+                [{"id": entries["甲"]["id"], "score": 0.91}],
+                model_name="demo-model",
+                prompt_version="rules-v1",
+                next_scan_id=entries["甲"]["id"],
+            )
+            overview = self.service.get_ai_overview(prompt_version="rules-v1")
+
+        self.assertIsNone(overview["progress"]["rate_per_minute"])
+        self.assertIsNone(overview["progress"]["eta_seconds"])
 
     def test_ai_batch_prioritizes_unlabeled_before_old_prompt_version(self) -> None:
         with mock.patch("app.service.transliterate_phrase", side_effect=["jiǎ", "yǐ", "bǐng", "dīng"]):

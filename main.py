@@ -202,6 +202,7 @@ class AppHandler(SimpleHTTPRequestHandler):
                 query = parse_qs(parsed.query)
                 overwrite_pinyin = _load_bool(query.get("overwrite_pinyin", ["0"])[0], False)
                 overwrite_weight = _load_bool(query.get("overwrite_weight", ["1"])[0], True)
+                mark_accepted = _load_bool(query.get("mark_accepted", ["0"])[0], False)
                 raw_body = self._read_raw_body()
                 if not raw_body.strip():
                     self._send_json(400, {"error": "导入文件不能为空。"})
@@ -214,6 +215,7 @@ class AppHandler(SimpleHTTPRequestHandler):
                     text,
                     overwrite_pinyin=overwrite_pinyin,
                     overwrite_weight=overwrite_weight,
+                    mark_accepted=mark_accepted,
                 )
                 _verbose_log_json(
                     "import-file",
@@ -222,6 +224,7 @@ class AppHandler(SimpleHTTPRequestHandler):
                         "chars": len(text),
                         "overwrite_pinyin": overwrite_pinyin,
                         "overwrite_weight": overwrite_weight,
+                        "mark_accepted": mark_accepted,
                         "result": result,
                     },
                 )
@@ -237,10 +240,12 @@ class AppHandler(SimpleHTTPRequestHandler):
                     return
                 overwrite_pinyin = _load_bool(payload.get("overwrite_pinyin"), False)
                 overwrite_weight = _load_bool(payload.get("overwrite_weight"), True)
+                mark_accepted = _load_bool(payload.get("mark_accepted"), False)
                 result = _service().import_text(
                     text,
                     overwrite_pinyin=overwrite_pinyin,
                     overwrite_weight=overwrite_weight,
+                    mark_accepted=mark_accepted,
                 )
                 _verbose_log_json(
                     "import-text",
@@ -248,6 +253,7 @@ class AppHandler(SimpleHTTPRequestHandler):
                         "chars": len(text),
                         "overwrite_pinyin": overwrite_pinyin,
                         "overwrite_weight": overwrite_weight,
+                        "mark_accepted": mark_accepted,
                         "result": result,
                     },
                 )
