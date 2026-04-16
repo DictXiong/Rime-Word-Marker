@@ -199,6 +199,9 @@ class AppHandler(SimpleHTTPRequestHandler):
     def _handle_api_post(self, parsed) -> None:
         try:
             if parsed.path == "/api/import-file":
+                query = parse_qs(parsed.query)
+                overwrite_pinyin = _load_bool(query.get("overwrite_pinyin", ["0"])[0], False)
+                overwrite_weight = _load_bool(query.get("overwrite_weight", ["1"])[0], True)
                 raw_body = self._read_raw_body()
                 if not raw_body.strip():
                     self._send_json(400, {"error": "导入文件不能为空。"})
@@ -207,10 +210,20 @@ class AppHandler(SimpleHTTPRequestHandler):
                     text = raw_body.decode("utf-8-sig")
                 except UnicodeDecodeError as exc:
                     raise ValueError("导入文件不是合法的 UTF-8 文本。") from exc
-                result = _service().import_text(text)
+                result = _service().import_text(
+                    text,
+                    overwrite_pinyin=overwrite_pinyin,
+                    overwrite_weight=overwrite_weight,
+                )
                 _verbose_log_json(
                     "import-file",
-                    {"bytes": len(raw_body), "chars": len(text), "result": result},
+                    {
+                        "bytes": len(raw_body),
+                        "chars": len(text),
+                        "overwrite_pinyin": overwrite_pinyin,
+                        "overwrite_weight": overwrite_weight,
+                        "result": result,
+                    },
                 )
                 self._send_json(200, {"result": result, "stats": _service().get_stats()})
                 return
@@ -222,10 +235,21 @@ class AppHandler(SimpleHTTPRequestHandler):
                 if not text.strip():
                     self._send_json(400, {"error": "导入内容不能为空。"})
                     return
-                result = _service().import_text(text)
+                overwrite_pinyin = _load_bool(payload.get("overwrite_pinyin"), False)
+                overwrite_weight = _load_bool(payload.get("overwrite_weight"), True)
+                result = _service().import_text(
+                    text,
+                    overwrite_pinyin=overwrite_pinyin,
+                    overwrite_weight=overwrite_weight,
+                )
                 _verbose_log_json(
                     "import-text",
-                    {"chars": len(text), "result": result},
+                    {
+                        "chars": len(text),
+                        "overwrite_pinyin": overwrite_pinyin,
+                        "overwrite_weight": overwrite_weight,
+                        "result": result,
+                    },
                 )
                 self._send_json(200, {"result": result, "stats": _service().get_stats()})
                 return

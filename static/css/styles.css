@@ -536,6 +536,42 @@ textarea {
   word-break: break-word;
 }
 
+.review-weight-badge {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  padding: 8px 14px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.7);
+  border: 1px solid var(--stroke);
+  color: var(--muted);
+  font-size: 0.9rem;
+  font-weight: 800;
+}
+
+.review-weight-badge.weight-unknown {
+  background: rgba(29, 29, 29, 0.05);
+  color: var(--muted);
+}
+
+.review-weight-badge.weight-low {
+  background: var(--reject-soft);
+  border-color: rgba(188, 63, 50, 0.18);
+  color: var(--reject);
+}
+
+.review-weight-badge.weight-mid {
+  background: var(--pending-soft);
+  border-color: rgba(178, 115, 17, 0.18);
+  color: var(--pending);
+}
+
+.review-weight-badge.weight-high {
+  background: var(--accept-soft);
+  border-color: rgba(31, 122, 79, 0.18);
+  color: var(--accept);
+}
+
 .review-pinyin {
   margin-top: 18px;
   color: var(--accent);
@@ -1078,6 +1114,12 @@ input[type="radio"] {
   min-width: 96px;
 }
 
+.default-weight-note {
+  color: var(--muted);
+  font-size: 0.82em;
+  white-space: nowrap;
+}
+
 .col-ai-status {
   min-width: 128px;
 }
@@ -1532,7 +1574,6 @@ input[type="radio"] {
     background: transparent;
   }
 
-  #reviewWeight,
   #reviewLabeledAt {
     display: none;
   }

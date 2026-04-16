@@ -30,15 +30,153 @@ class WordServiceTestCase(TestCase):
         self.assertEqual(result["parsed"], 3)
         self.assertEqual(result["inserted"], 2)
         self.assertEqual(result["skipped"], 1)
+        self.assertEqual(result["updated"], 1)
+        self.assertEqual(result["updated_pinyin"], 0)
+        self.assertEqual(result["updated_weight"], 1)
 
         page = self.service.list_entries(page=1, page_size=10)
         self.assertEqual(page["total"], 2)
         phrases = {item["phrase"]: item for item in page["items"]}
-        self.assertEqual(phrases["你好"]["weight"], 20)
+        self.assertEqual(phrases["你好"]["pinyin"], "ni hao")
+        self.assertEqual(phrases["你好"]["weight"], 99)
+        self.assertTrue(phrases["你好"]["weight_defined"])
         self.assertEqual(phrases["OpenAI助手"]["pinyin"], "openai zhu shou")
         self.assertEqual(phrases["OpenAI助手"]["weight"], 1)
+        self.assertFalse(phrases["OpenAI助手"]["weight_defined"])
         self.assertEqual(result["accepted_existing"], 0)
         self.assertEqual(result["rejected_existing"], 0)
+
+    def test_import_can_control_existing_pinyin_and_weight_overwrites(self) -> None:
+        self.service.import_text("测试\tce shi\t1")
+
+        result = self.service.import_text("测试\tcuo pin\t9")
+        entry = self.service.list_entries(page=1, page_size=10)["items"][0]
+        self.assertEqual(entry["pinyin"], "ce shi")
+        self.assertEqual(entry["weight"], 9)
+        self.assertTrue(entry["weight_defined"])
+        self.assertEqual(result["updated"], 1)
+        self.assertEqual(result["updated_pinyin"], 0)
+        self.assertEqual(result["updated_weight"], 1)
+
+        result = self.service.import_text(
+            "测试\txin pin\t",
+            overwrite_pinyin=True,
+            overwrite_weight=True,
+        )
+        entry = self.service.list_entries(page=1, page_size=10)["items"][0]
+        self.assertEqual(entry["pinyin"], "xin pin")
+        self.assertEqual(entry["weight"], 9)
+        self.assertTrue(entry["weight_defined"])
+        self.assertEqual(result["updated"], 1)
+        self.assertEqual(result["updated_pinyin"], 1)
+        self.assertEqual(result["updated_weight"], 0)
+
+    def test_reimporting_existing_entries_does_not_advance_next_insert_id(self) -> None:
+        self.service.import_text("甲\ta\t1\n乙\tb\t2\n丙\tc\t3")
+        self.service.import_text("甲\ta\t11\n乙\tb\t12\n丙\tc\t13")
+        self.service.import_text("丁\td\t4")
+
+        page = self.service.list_entries(page=1, page_size=10)
+        entries = {
+            item["phrase"]: item
+            for item in page["items"]
+        }
+
+        self.assertEqual(entries["甲"]["id"], 1)
+        self.assertEqual(entries["乙"]["id"], 2)
+        self.assertEqual(entries["丙"]["id"], 3)
+        self.assertEqual(entries["丁"]["id"], 4)
+        self.assertEqual(entries["甲"]["weight"], 11)
+
+    def test_import_does_not_overwrite_existing_weight_with_invalid_weight(self) -> None:
+        self.service.import_text("测试\tce shi\t8")
+
+        result = self.service.import_text("测试\tce shi\tbad")
+        entry = self.service.list_entries(page=1, page_size=10)["items"][0]
+
+        self.assertEqual(entry["weight"], 8)
+        self.assertTrue(entry["weight_defined"])
+        self.assertEqual(result["updated"], 0)
+        self.assertEqual(result["updated_weight"], 0)
+
+    def test_import_weight_overwrite_preserves_ai_annotation(self) -> None:
+        self.service.import_text("测试\tce shi\t8")
+        entry = self.service.list_entries(page=1, page_size=10)["items"][0]
+        self.service.apply_ai_annotations(
+            [entry],
+            [{"id": entry["id"], "score": 0.94}],
+            model_name="demo-model",
+            prompt_version="demo-v1",
+            next_scan_id=entry["id"],
+        )
+
+        self.service.import_text("测试\tce shi\t9")
+        updated = self.service.get_entry(entry["id"])
+
+        self.assertEqual(updated["weight"], 9)
+        self.assertTrue(updated["weight_defined"])
+        self.assertEqual(updated["ai_label"], "accepted")
+        self.assertEqual(updated["ai_score"], 0.94)
+        self.assertEqual(updated["ai_model"], "demo-model")
+        self.assertEqual(updated["ai_prompt_version"], "demo-v1")
+
+    def test_import_distinguishes_missing_weight_from_explicit_one(self) -> None:
+        with mock.patch("app.service.transliterate_phrase", side_effect=["wèi dìng yì", "míng què"]):
+            self.service.import_text("未定义\n明确\tmíng què\t1")
+
+        entries = {
+            item["phrase"]: item
+            for item in self.service.list_entries(page=1, page_size=10)["items"]
+        }
+
+        self.assertEqual(entries["未定义"]["weight"], 1)
+        self.assertFalse(entries["未定义"]["weight_defined"])
+        self.assertEqual(entries["明确"]["weight"], 1)
+        self.assertTrue(entries["明确"]["weight_defined"])
+
+    def test_existing_database_migration_treats_weights_as_undefined(self) -> None:
+        legacy_path = Path(self.temp_dir.name) / "legacy.db"
+        with WordService(legacy_path)._managed_connection() as connection:
+            connection.execute("DROP TABLE entries")
+            connection.execute(
+                """
+                CREATE TABLE entries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    phrase TEXT NOT NULL UNIQUE,
+                    pinyin TEXT NOT NULL,
+                    weight INTEGER NOT NULL DEFAULT 1,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    imported_at TEXT NOT NULL,
+                    labeled_at TEXT
+                )
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO entries (phrase, pinyin, weight, status, imported_at, labeled_at)
+                VALUES (?, ?, ?, ?, ?, NULL)
+                """,
+                ("旧词", "jiu ci", 9, "pending", "2026-04-16T00:00:00+08:00"),
+            )
+            connection.commit()
+
+        migrated_service = WordService(legacy_path)
+        entry = migrated_service.list_entries(page=1, page_size=10)["items"][0]
+
+        self.assertEqual(entry["weight"], 9)
+        self.assertFalse(entry["weight_defined"])
+
+    def test_update_entry_without_weight_preserves_weight_defined(self) -> None:
+        with mock.patch("app.service.transliterate_phrase", return_value="wei ding yi"):
+            self.service.import_text("未定义")
+
+        entry = self.service.list_entries(page=1, page_size=10)["items"][0]
+        self.assertFalse(entry["weight_defined"])
+
+        updated = self.service.update_entry(entry["id"], {"pinyin": "wèi dìng yì"})
+
+        self.assertEqual(updated["weight"], 1)
+        self.assertFalse(updated["weight_defined"])
 
     def test_import_skips_everything_between_yaml_markers(self) -> None:
         sample = "\n".join(
@@ -482,6 +620,47 @@ class WordServiceTestCase(TestCase):
         self.assertIsNone(updated["ai_model"])
         self.assertIsNone(updated["ai_prompt_version"])
 
+    def test_update_entry_preserves_ai_annotation_when_weight_input_changes(self) -> None:
+        self.service.import_text("测试\tce shi\t8")
+        entry = self.service.get_next_pending()
+        self.service.apply_ai_annotations(
+            [entry],
+            [{"id": entry["id"], "score": 0.94}],
+            model_name="demo-model",
+            prompt_version="demo-v1",
+            next_scan_id=entry["id"],
+        )
+
+        updated = self.service.update_entry(entry["id"], {"weight": "9"})
+
+        self.assertEqual(updated["weight"], 9)
+        self.assertTrue(updated["weight_defined"])
+        self.assertEqual(updated["ai_label"], "accepted")
+        self.assertEqual(updated["ai_score"], 0.94)
+        self.assertEqual(updated["ai_model"], "demo-model")
+        self.assertEqual(updated["ai_prompt_version"], "demo-v1")
+
+    def test_batch_update_entries_preserves_ai_annotation_when_weight_input_changes(self) -> None:
+        self.service.import_text("测试\tce shi\t8")
+        entry = self.service.get_next_pending()
+        self.service.apply_ai_annotations(
+            [entry],
+            [{"id": entry["id"], "score": 0.94}],
+            model_name="demo-model",
+            prompt_version="demo-v1",
+            next_scan_id=entry["id"],
+        )
+
+        result = self.service.batch_update_entries([entry["id"]], {"weight": "9"})
+        updated = result["entries"][0]
+
+        self.assertEqual(updated["weight"], 9)
+        self.assertTrue(updated["weight_defined"])
+        self.assertEqual(updated["ai_label"], "accepted")
+        self.assertEqual(updated["ai_score"], 0.94)
+        self.assertEqual(updated["ai_model"], "demo-model")
+        self.assertEqual(updated["ai_prompt_version"], "demo-v1")
+
     def test_set_ai_enabled_requires_sufficient_human_labels(self) -> None:
         with mock.patch("app.service.transliterate_phrase", side_effect=["jiǎ", "yǐ"]):
             self.service.import_text("甲\n乙")
@@ -634,6 +813,61 @@ class WordServiceTestCase(TestCase):
         )
 
         self.assertEqual([item["phrase"] for item in pending_only_batch["items"]], ["乙"])
+
+    def test_ai_batch_prioritizes_unlabeled_before_old_prompt_version(self) -> None:
+        with mock.patch("app.service.transliterate_phrase", side_effect=["jiǎ", "yǐ", "bǐng", "dīng"]):
+            self.service.import_text("甲\n乙\n丙\n丁")
+
+        entries = {
+            item["phrase"]: item
+            for item in self.service.list_entries(page=1, page_size=10)["items"]
+        }
+        self.service.apply_ai_annotations(
+            [entries["甲"], entries["乙"]],
+            [
+                {"id": entries["甲"]["id"], "score": 0.91},
+                {"id": entries["乙"]["id"], "score": 0.18},
+            ],
+            model_name="demo-model",
+            prompt_version="old-rules",
+            next_scan_id=entries["乙"]["id"],
+        )
+
+        batch = self.service.get_ai_batch_candidates(
+            limit=3,
+            prompt_version="new-rules",
+        )
+
+        self.assertEqual([item["phrase"] for item in batch["items"]], ["丙", "丁", "甲"])
+        self.assertEqual(batch["next_scan_id"], entries["丁"]["id"])
+
+    def test_random_ai_batch_prioritizes_unlabeled_before_old_prompt_version(self) -> None:
+        with mock.patch("app.service.transliterate_phrase", side_effect=["jiǎ", "yǐ", "bǐng", "dīng"]):
+            self.service.import_text("甲\n乙\n丙\n丁")
+
+        entries = {
+            item["phrase"]: item
+            for item in self.service.list_entries(page=1, page_size=10)["items"]
+        }
+        self.service.apply_ai_annotations(
+            [entries["甲"], entries["乙"]],
+            [
+                {"id": entries["甲"]["id"], "score": 0.91},
+                {"id": entries["乙"]["id"], "score": 0.18},
+            ],
+            model_name="demo-model",
+            prompt_version="old-rules",
+            next_scan_id=entries["乙"]["id"],
+        )
+
+        with mock.patch("app.service.random.randint", return_value=entries["甲"]["id"]):
+            batch = self.service.get_ai_batch_candidates(
+                limit=2,
+                prompt_version="new-rules",
+                selection_mode="random",
+            )
+
+        self.assertEqual([item["phrase"] for item in batch["items"]], ["丙", "丁"])
 
     def test_ai_batch_can_select_random_candidates(self) -> None:
         with mock.patch("app.service.transliterate_phrase", side_effect=["jiǎ", "yǐ", "bǐng"]):

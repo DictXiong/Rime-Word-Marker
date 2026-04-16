@@ -1,4 +1,5 @@
 import json
+from urllib import request
 from unittest import TestCase, mock
 
 from app.ai import (
@@ -6,12 +7,34 @@ from app.ai import (
     AIConfig,
     AIResponseTruncatedError,
     AIResponseValidationError,
+    DEFAULT_AI_PROMPT_VERSION,
     MAX_AI_MAX_TOKENS,
     OpenAICompatClient,
+    _build_annotation_messages,
 )
 
 
 class OpenAICompatClientTestCase(TestCase):
+    def test_annotation_candidates_include_only_defined_weights(self) -> None:
+        messages = _build_annotation_messages(
+            AIConfig(endpoint="http://example.test/v1", model="demo-model"),
+            [],
+            [
+                {"id": 1, "phrase": "高频词", "weight": 88, "weight_defined": True},
+                {"id": 2, "phrase": "未知词频", "weight": 1, "weight_defined": False},
+            ],
+        )
+        user_payload = json.loads(messages[1]["content"])
+
+        self.assertEqual(
+            user_payload["candidates"],
+            [
+                {"id": 1, "phrase": "高频词", "weight": 88},
+                {"id": 2, "phrase": "未知词频"},
+            ],
+        )
+        self.assertIn("词频越高", messages[0]["content"])
+
     def test_annotate_batch_repairs_bad_model_output(self) -> None:
         client = OpenAICompatClient(
             AIConfig(endpoint="http://example.test/v1", model="demo-model")
@@ -92,6 +115,26 @@ class OpenAICompatClientTestCase(TestCase):
 
         self.assertEqual(predictions, [{"id": 1, "score": 0.9}])
         self.assertEqual(seen_max_tokens, [4096, 8192])
+
+    def test_send_request_retries_connection_reset(self) -> None:
+        client = OpenAICompatClient(
+            AIConfig(endpoint="http://example.test/v1", model="demo-model")
+        )
+        response = mock.Mock()
+        response.__enter__ = mock.Mock(return_value=response)
+        response.__exit__ = mock.Mock(return_value=None)
+        response.read.return_value = b'{"choices":[{"message":{"content":"{}"}}]}'
+        http_request = request.Request("http://example.test/v1/chat/completions")
+
+        with mock.patch(
+            "app.ai.request.urlopen",
+            side_effect=[ConnectionResetError("reset by peer"), response],
+        ) as urlopen_mock, mock.patch("app.ai.time.sleep") as sleep_mock, mock.patch("builtins.print"):
+            payload = client._send_request_with_retries(http_request)
+
+        self.assertEqual(payload, {"choices": [{"message": {"content": "{}"}}]})
+        self.assertEqual(urlopen_mock.call_count, 2)
+        sleep_mock.assert_called_once()
 
     def test_annotate_batch_splits_when_truncated_at_max_tokens(self) -> None:
         client = OpenAICompatClient(
@@ -233,7 +276,7 @@ class AIAnnotationWorkerTestCase(TestCase):
         self.assertTrue(result)
         service.get_ai_batch_candidates.assert_called_once_with(
             limit=24,
-            prompt_version="4.0",
+            prompt_version=DEFAULT_AI_PROMPT_VERSION,
             selection_mode="random",
         )
         print_mock.assert_called_once()
@@ -281,7 +324,7 @@ class AIAnnotationWorkerTestCase(TestCase):
             service.get_ai_batch_candidates.return_value["items"],
             [{"id": 1, "score": 0.9}, {"id": 2, "score": 0.1}],
             model_name="demo-model",
-            prompt_version="4.0",
+            prompt_version=DEFAULT_AI_PROMPT_VERSION,
             next_scan_id=2,
         )
 
@@ -317,7 +360,7 @@ class AIAnnotationWorkerTestCase(TestCase):
             service.get_ai_batch_candidates.return_value["items"],
             predictions,
             model_name="demo-model",
-            prompt_version="4.0",
+            prompt_version=DEFAULT_AI_PROMPT_VERSION,
             next_scan_id=2,
         )
 

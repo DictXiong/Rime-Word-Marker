@@ -129,6 +129,7 @@ cp config.example.json config.json
 - `phrase`：词条本身，唯一
 - `pinyin`：标准拼音，可手动修改
 - `weight`：词频 / 权重，默认 `1`
+- `weight_defined`：词频是否由导入文件或人工编辑明确定义
 - `status`：`pending` / `accepted` / `rejected`
 - `imported_at`：导入时间
 - `labeled_at`：最后一次被标注为接受或拒绝的时间
@@ -156,7 +157,11 @@ cp config.example.json config.json
 - 后两列可省略
 - 缺失拼音时自动补全
 - 缺失词频时默认设为 `1`
+- 系统会区分“未定义词频”和“词频明确定义为 1”
+- 旧版数据库自动升级时，既有词条默认视为“词频未定义”
 - 只按词条本身去重
+- 重复词条可按导入页选项覆盖拼音和词频；默认不覆盖拼音、覆盖词频
+- 覆盖只会使用导入行中实际提供的列，省略拼音或词频时不会覆盖已有值
 - 如果文件中包含 Rime YAML 头块，`---` 到 `...` 之间的内容会被整段忽略
 
 ## 导出格式
@@ -200,6 +205,7 @@ cp config.example.json config.json
 - 只有当人工 `accepted + rejected` 样本量足够时，才允许开启自动标注
 - AI few-shot 只采样人工接受 / 拒绝样本，并会额外优先加入人工结果与旧 AI 结果不一致的 hard examples
 - few-shot 样本会在服务进程内缓存，并在人工标注或词条修改后自动失效
+- AI 候选词只会在词频明确定义时携带 `weight`；词频越高会提示模型提高接受倾向
 - `ai.candidate_mode` 可设为 `sequential` 或 `random`，用于控制后台 AI 队列顺序抽取或随机抽取
 - `ai.retry_extreme_batches` 默认关闭；打开后，若整批 AI 结果全为接受或全为拒绝，会自动重跑一次
 - 如果 AI 输出被 `max_tokens` 截断，会先临时提高 `max_tokens` 重试，再自动拆批重试
@@ -240,7 +246,7 @@ python3 -m compileall app main.py tests
 
 - 数据库路径可配置
 - 导出改为流式写出，避免大导出时占用过多内存
-- 导入重复词统计改成批量查询，减少大词库重复导入时的性能损耗
+- 导入重复词统计改成批量查询，并支持可选覆盖拼音和词频
 
 如果你准备长期运行，建议额外做：
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import socket
 import threading
 import time
 from dataclasses import dataclass
@@ -11,7 +12,7 @@ from urllib import error, parse, request
 from app.constants import ACCEPTED, PENDING, REJECTED
 
 
-DEFAULT_AI_PROMPT_VERSION = "4.0"
+DEFAULT_AI_PROMPT_VERSION = "5.0"
 DEFAULT_AI_TIMEOUT = 90
 DEFAULT_AI_BATCH_SIZE = 24
 MAX_AI_BATCH_SIZE = 128
@@ -250,6 +251,8 @@ class OpenAICompatClient:
                 last_error = RuntimeError(f"AI 接口返回错误：HTTP {exc.code} {detail}")
             except error.URLError as exc:
                 last_error = RuntimeError(f"无法连接 AI 接口：{exc.reason}")
+            except (ConnectionError, OSError, TimeoutError, socket.timeout) as exc:
+                last_error = RuntimeError(f"AI 接口连接中断：{exc}")
 
             if last_error is not None:
                 _log(
@@ -477,6 +480,9 @@ def _build_system_prompt(prompt_version: str) -> str:
 5. 合法、自然的中英混合词条可以接受，不应仅因包含英文、缩写、品牌名或专有名词就拒绝。例如“OpenAI助手”“ChatGPT插件”“Python脚本”通常可以接受。
 6. 只有在中英混合形式明显混乱、像乱码、乱拼或不自然残片时，才应拒绝。
 7. 不要为了凑结果而极端自信；拿不准时请给中间分。
+8. candidates 中如果包含 weight，表示词频已被明确定义；词频越高，通常说明越常用、越适合作为输入法词条，可适度提高接受倾向。
+9. candidates 中没有 weight 时，表示词频未定义；不要把“未定义”理解成低频或不常用。
+10. 词频只是辅助参考，不能覆盖上述硬规则；即使词频很高，单字、明显错误词汇、乱码、以及“常用词 + 单个助词/语气词”仍应拒绝。
 
 输入 examples 是人工标注样本，label 和 score 都代表人工判断，应优先学习它们。
 如果 example.source 是 "human_ai_disagreement"，说明旧 AI 判断曾与人工不同；这种 hard example 尤其应向人工 label/score 对齐。
@@ -530,9 +536,7 @@ def _build_annotation_messages(
                 {
                     "task": "请仅根据词条本身进行判断，不参考拼音。",
                     "examples": examples,
-                    "candidates": [
-                        {"id": item["id"], "phrase": item["phrase"]} for item in items
-                    ],
+                    "candidates": [_build_candidate_payload(item) for item in items],
                 },
                 ensure_ascii=False,
             ),
@@ -556,9 +560,7 @@ def _build_repair_messages(
                     "task": "上一轮输出格式不合格。请忽略坏输出的格式，重新根据同一套规则为所有候选词评分。",
                     "error": error_message,
                     "examples": examples,
-                    "candidates": [
-                        {"id": item["id"], "phrase": item["phrase"]} for item in items
-                    ],
+                    "candidates": [_build_candidate_payload(item) for item in items],
                     "expected_ids": [int(item["id"]) for item in items],
                     "bad_output": raw_content[:4000],
                 },
@@ -566,6 +568,13 @@ def _build_repair_messages(
             ),
         },
     ]
+
+
+def _build_candidate_payload(item: dict[str, Any]) -> dict[str, Any]:
+    payload = {"id": item["id"], "phrase": item["phrase"]}
+    if item.get("weight_defined"):
+        payload["weight"] = item["weight"]
+    return payload
 
 
 def _extract_response_content(payload: dict[str, Any]) -> str:

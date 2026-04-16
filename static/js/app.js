@@ -69,6 +69,7 @@ const state = {
   edit: {
     entryId: null,
     forceClearLabeledAt: false,
+    originalEntry: null,
   },
 };
 
@@ -146,6 +147,8 @@ function cacheElements() {
   els.importForm = document.getElementById("importForm");
   els.importFile = document.getElementById("importFile");
   els.importText = document.getElementById("importText");
+  els.importOverwritePinyin = document.getElementById("importOverwritePinyin");
+  els.importOverwriteWeight = document.getElementById("importOverwriteWeight");
   els.importMessage = document.getElementById("importMessage");
 
   els.exportForm = document.getElementById("exportForm");
@@ -302,6 +305,8 @@ function bindEvents() {
       event.preventDefault();
       const file = els.importFile.files?.[0] || null;
       const text = els.importText.value.trim();
+      const overwritePinyin = !!els.importOverwritePinyin?.checked;
+      const overwriteWeight = els.importOverwriteWeight?.checked !== false;
 
       if (!file && !text) {
         showMessage("请先选择文件或粘贴导入内容。");
@@ -310,11 +315,22 @@ function bindEvents() {
 
       try {
         setImportBusy(true, file ? `正在导入文件：${file.name}` : "正在处理粘贴的词库内容");
+        const importParams = new URLSearchParams({
+          overwrite_pinyin: overwritePinyin ? "1" : "0",
+          overwrite_weight: overwriteWeight ? "1" : "0",
+        });
         const payload = file
-          ? await postRawText("/api/import-file", file)
-          : await postJSON("/api/import", { text });
+          ? await postRawText(`/api/import-file?${importParams.toString()}`, file)
+          : await postJSON("/api/import", {
+              text,
+              overwrite_pinyin: overwritePinyin,
+              overwrite_weight: overwriteWeight,
+            });
         const result = payload.result;
-        const summary = `词库包含 ${result.parsed} 条，其中 ${result.inserted} 条新词条，${result.accepted_existing} 条已被标注为接受，${result.rejected_existing} 条已被标注为拒绝。`;
+        const updateSummary = result.updated
+          ? `，更新 ${result.updated} 条重复词条（拼音 ${result.updated_pinyin}，词频 ${result.updated_weight}）`
+          : "";
+        const summary = `词库包含 ${result.parsed} 条，其中 ${result.inserted} 条新词条${updateSummary}，${result.accepted_existing} 条已被标注为接受，${result.rejected_existing} 条已被标注为拒绝。`;
         showMessage(summary);
         els.importText.value = "";
         els.importFile.value = "";
@@ -838,7 +854,7 @@ function paintReviewEntry(entry) {
   els.reviewPinyinInput.disabled = false;
   els.reviewAutoPinyinButton.disabled = false;
   els.reviewSavePinyinButton.disabled = false;
-  els.reviewWeight.textContent = `词频 ${entry.weight}`;
+  paintReviewWeight(entry);
   els.reviewImportedAt.textContent = `导入 ${formatDate(entry.imported_at)}`;
   els.reviewLabeledAt.textContent = `标注 ${entry.labeled_at ? formatDate(entry.labeled_at) : "未标注"}`;
   els.reviewAiScore.textContent =
@@ -865,6 +881,7 @@ function renderReviewEmpty(message = "", canGoBack = false, animate = true) {
   els.reviewAutoPinyinButton.disabled = true;
   els.reviewSavePinyinButton.disabled = true;
   els.reviewWeight.textContent = "词频 -";
+  els.reviewWeight.className = "review-weight-badge";
   els.reviewImportedAt.textContent = "导入时间 -";
   els.reviewLabeledAt.textContent = "标注时间 -";
   if (els.reviewAiScore) {
@@ -1023,7 +1040,7 @@ function renderEntryRow(entry) {
       <td class="col-pinyin">
         <div class="table-pinyin">${escapeHtml(entry.pinyin)}</div>
       </td>
-      <td class="col-weight">${entry.weight}</td>
+      <td class="col-weight">${formatManageWeight(entry)}</td>
       <td class="col-status">
         <span class="status-pill ${entry.status} compact">${STATUS_LABELS[entry.status]}</span>
       </td>
@@ -1233,6 +1250,7 @@ async function openEditDialog(entryId) {
     const entry = await fetchJSON(`/api/entries/${entryId}`);
     state.edit.entryId = entry.id;
     state.edit.forceClearLabeledAt = false;
+    state.edit.originalEntry = entry;
     els.editEntryId.value = String(entry.id);
     els.editPhrase.value = entry.phrase;
     els.editPinyin.value = entry.pinyin || "";
@@ -1249,6 +1267,7 @@ async function openEditDialog(entryId) {
 function closeEditDialog() {
   state.edit.entryId = null;
   state.edit.forceClearLabeledAt = false;
+  state.edit.originalEntry = null;
   closeDialog(els.entryEditDialog);
 }
 
@@ -1277,10 +1296,14 @@ async function saveEditForm() {
   const payload = {
     phrase: els.editPhrase.value.trim(),
     pinyin: els.editPinyin.value.trim(),
-    weight: els.editWeight.value.trim(),
     status: els.editStatus.value,
     imported_at: fromDatetimeLocalValue(els.editImportedAt.value),
   };
+
+  const nextWeight = els.editWeight.value.trim();
+  if (nextWeight !== String(state.edit.originalEntry?.weight ?? "")) {
+    payload.weight = nextWeight;
+  }
 
   if (els.editLabeledAt.value) {
     payload.labeled_at = fromDatetimeLocalValue(els.editLabeledAt.value);
@@ -1461,6 +1484,31 @@ function formatDate(rawValue) {
   const date = new Date(rawValue);
   if (Number.isNaN(date.getTime())) return rawValue;
   return date.toLocaleString("zh-CN", { hour12: false });
+}
+
+function formatReviewWeight(entry) {
+  if (!entry?.weight_defined) return "词频未定义";
+  return `词频 ${entry.weight}`;
+}
+
+function paintReviewWeight(entry) {
+  if (!els.reviewWeight) return;
+  els.reviewWeight.textContent = formatReviewWeight(entry);
+  els.reviewWeight.className = `review-weight-badge ${getReviewWeightTone(entry)}`;
+}
+
+function getReviewWeightTone(entry) {
+  if (!entry?.weight_defined) return "weight-unknown";
+  const weight = Number(entry?.weight ?? 1);
+  if (Number.isFinite(weight) && weight > 10) return "weight-high";
+  if (Number.isFinite(weight) && weight >= 2) return "weight-mid";
+  return "weight-low";
+}
+
+function formatManageWeight(entry) {
+  const weight = escapeHtml(String(entry?.weight ?? 1));
+  if (entry?.weight_defined) return weight;
+  return `${weight}<span class="default-weight-note">（默认）</span>`;
 }
 
 function toDatetimeLocalValue(rawValue) {

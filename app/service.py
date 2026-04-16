@@ -77,6 +77,7 @@ class WordService:
                     phrase TEXT NOT NULL UNIQUE,
                     pinyin TEXT NOT NULL,
                     weight INTEGER NOT NULL DEFAULT 1,
+                    weight_defined INTEGER NOT NULL DEFAULT 0,
                     status TEXT NOT NULL DEFAULT 'pending',
                     imported_at TEXT NOT NULL,
                     labeled_at TEXT
@@ -108,6 +109,11 @@ class WordService:
             entry_columns = {
                 row["name"] for row in connection.execute("PRAGMA table_info(entries)").fetchall()
             }
+            if "weight_defined" not in entry_columns:
+                connection.execute(
+                    "ALTER TABLE entries ADD COLUMN weight_defined INTEGER NOT NULL DEFAULT 0"
+                )
+                entry_columns.add("weight_defined")
             for column_name, column_type in (
                 ("ai_label", "TEXT"),
                 ("ai_score", "REAL"),
@@ -139,15 +145,23 @@ class WordService:
             self._ensure_setting(connection, AI_SETTING_LAST_RUN_AT, "")
             connection.commit()
 
-    def import_text(self, raw_text: str) -> dict[str, Any]:
+    def import_text(
+        self,
+        raw_text: str,
+        overwrite_pinyin: bool = False,
+        overwrite_weight: bool = True,
+    ) -> dict[str, Any]:
         inserted = 0
         skipped = 0
+        updated = 0
+        updated_pinyin = 0
+        updated_weight = 0
         parsed = 0
         accepted_existing = 0
         rejected_existing = 0
         imported_at = self._now()
         in_yaml_header = False
-        parsed_entries: list[tuple[int, str, str, int]] = []
+        parsed_entries: list[tuple[int, str, str, int, bool, bool]] = []
 
         for line_number, raw_line in enumerate(raw_text.splitlines(), start=1):
             stripped = raw_line.strip("\ufeff").strip()
@@ -164,41 +178,77 @@ class WordService:
                 continue
 
             parsed += 1
-            phrase, pinyin, weight = parsed_line
-            parsed_entries.append((line_number, phrase, pinyin, weight))
+            phrase, pinyin, weight, has_pinyin, has_weight = parsed_line
+            parsed_entries.append((line_number, phrase, pinyin, weight, has_pinyin, has_weight))
 
         with self._managed_connection() as connection:
             cursor = connection.cursor()
-            known_statuses = self._fetch_entry_statuses(
+            known_entries = self._fetch_entry_import_summaries(
                 connection,
-                [phrase for _, phrase, _, _ in parsed_entries],
+                [phrase for _, phrase, _, _, _, _ in parsed_entries],
             )
 
-            for line_number, phrase, pinyin, weight in parsed_entries:
-                try:
-                    cursor.execute(
-                        """
-                        INSERT OR IGNORE INTO entries (
-                            phrase, pinyin, weight, status, imported_at, labeled_at
-                        ) VALUES (?, ?, ?, ?, ?, NULL)
-                        """,
-                        (phrase, pinyin, weight, PENDING, imported_at),
-                    )
-                except RuntimeError:
-                    raise
-                except Exception as exc:  # pragma: no cover - defensive API path
-                    raise ValueError(f"第 {line_number} 行导入失败：{exc}") from exc
-
-                if cursor.rowcount == 1:
+            for line_number, phrase, pinyin, weight, has_pinyin, has_weight in parsed_entries:
+                if phrase not in known_entries:
+                    try:
+                        cursor.execute(
+                            """
+                            INSERT INTO entries (
+                                phrase, pinyin, weight, weight_defined, status, imported_at, labeled_at
+                            ) VALUES (?, ?, ?, ?, ?, ?, NULL)
+                            """,
+                            (phrase, pinyin, weight, 1 if has_weight else 0, PENDING, imported_at),
+                        )
+                    except RuntimeError:
+                        raise
+                    except Exception as exc:  # pragma: no cover - defensive API path
+                        raise ValueError(f"第 {line_number} 行导入失败：{exc}") from exc
                     inserted += 1
-                    known_statuses[phrase] = PENDING
+                    known_entries[phrase] = {
+                        "status": PENDING,
+                        "weight": weight,
+                        "weight_defined": has_weight,
+                    }
                 else:
                     skipped += 1
-                    status = known_statuses.get(phrase)
+                    current = known_entries.get(phrase, {})
+                    status = current.get("status")
                     if status == ACCEPTED:
                         accepted_existing += 1
                     elif status == REJECTED:
                         rejected_existing += 1
+
+                    update_fields: list[str] = []
+                    update_values: list[Any] = []
+                    if overwrite_pinyin and has_pinyin:
+                        update_fields.append("pinyin = ?")
+                        update_values.append(pinyin)
+                    if overwrite_weight and has_weight:
+                        update_fields.append("weight = ?")
+                        update_values.append(weight)
+                        update_fields.append("weight_defined = 1")
+
+                    if update_fields:
+                        try:
+                            cursor.execute(
+                                f"""
+                                UPDATE entries
+                                SET {", ".join(update_fields)}
+                                WHERE phrase = ?
+                                """,
+                                [*update_values, phrase],
+                            )
+                        except RuntimeError:
+                            raise
+                        except Exception as exc:  # pragma: no cover - defensive API path
+                            raise ValueError(f"第 {line_number} 行更新失败：{exc}") from exc
+                        updated += 1
+                        if overwrite_pinyin and has_pinyin:
+                            updated_pinyin += 1
+                        if overwrite_weight and has_weight:
+                            updated_weight += 1
+                            current["weight"] = weight
+                            current["weight_defined"] = True
 
             connection.commit()
 
@@ -206,12 +256,15 @@ class WordService:
             "parsed": parsed,
             "inserted": inserted,
             "skipped": skipped,
+            "updated": updated,
+            "updated_pinyin": updated_pinyin,
+            "updated_weight": updated_weight,
             "accepted_existing": accepted_existing,
             "rejected_existing": rejected_existing,
             "imported_at": imported_at,
         }
 
-    def _parse_import_line(self, raw_line: str) -> tuple[str, str, int] | None:
+    def _parse_import_line(self, raw_line: str) -> tuple[str, str, int, bool, bool] | None:
         line = raw_line.strip("\ufeff").rstrip("\n\r")
         stripped = line.strip()
         if not stripped:
@@ -228,9 +281,11 @@ class WordService:
         if not phrase:
             return None
 
-        pinyin = parts[1] if len(parts) > 1 and parts[1] else transliterate_phrase(phrase)
+        has_pinyin = len(parts) > 1 and bool(parts[1])
+        has_weight = len(parts) > 2 and bool(parts[2]) and self._is_valid_weight(parts[2])
+        pinyin = parts[1] if has_pinyin else transliterate_phrase(phrase)
         weight = self._parse_weight(parts[2]) if len(parts) > 2 else 1
-        return phrase, pinyin, weight
+        return phrase, pinyin, weight, has_pinyin, has_weight
 
     @staticmethod
     def _parse_weight(raw_weight: str) -> int:
@@ -238,6 +293,14 @@ class WordService:
             return int(raw_weight.strip())
         except (TypeError, ValueError):
             return 1
+
+    @staticmethod
+    def _is_valid_weight(raw_weight: str) -> bool:
+        try:
+            int(raw_weight.strip())
+        except (TypeError, ValueError):
+            return False
+        return True
 
     def export_dictionary(
         self,
@@ -616,50 +679,61 @@ class WordService:
     ) -> dict[str, Any]:
         limit = max(1, min(int(limit), MAX_AI_BATCH_SIZE))
         current_prompt_version = (prompt_version or "").strip()
+        primary_condition = "status = ? AND ai_label IS NULL"
+        primary_parameters: list[Any] = [PENDING]
+        fallback_condition = ""
+        fallback_parameters: list[Any] = []
         if current_prompt_version:
-            ai_queue_condition = (
-                "status = ? AND (ai_label IS NULL OR ai_prompt_version IS NULL OR ai_prompt_version != ?)"
+            fallback_condition = (
+                "status = ? AND ai_label IS NOT NULL "
+                "AND (ai_prompt_version IS NULL OR ai_prompt_version != ?)"
             )
-            ai_queue_parameters: list[Any] = [PENDING, current_prompt_version]
-        else:
-            ai_queue_condition = "status = ? AND ai_label IS NULL"
-            ai_queue_parameters = [PENDING]
+            fallback_parameters = [PENDING, current_prompt_version]
 
         with self._managed_connection() as connection:
             settings = self._get_settings(connection, [AI_SETTING_LAST_SCAN_ID])
             last_scan_id = int(settings.get(AI_SETTING_LAST_SCAN_ID, "0") or 0)
+            primary_rows: list[sqlite3.Row]
+            fallback_rows: list[sqlite3.Row] = []
             if selection_mode == "random":
-                rows = self._get_random_ai_batch_rows(
+                primary_rows = self._get_random_ai_batch_rows(
                     connection,
-                    ai_queue_condition,
-                    ai_queue_parameters,
+                    primary_condition,
+                    primary_parameters,
                     limit,
                 )
+                if fallback_condition and len(primary_rows) < limit:
+                    fallback_rows = self._get_random_ai_batch_rows(
+                        connection,
+                        fallback_condition,
+                        fallback_parameters,
+                        limit - len(primary_rows),
+                    )
             else:
-                rows = connection.execute(
-                    f"""
-                    SELECT *
-                    FROM entries
-                    WHERE {ai_queue_condition} AND id > ?
-                    ORDER BY id ASC
-                    LIMIT ?
-                    """,
-                    [*ai_queue_parameters, last_scan_id, limit],
-                ).fetchall()
-                if not rows and last_scan_id:
-                    rows = connection.execute(
-                        f"""
-                        SELECT *
-                        FROM entries
-                        WHERE {ai_queue_condition}
-                        ORDER BY id ASC
-                        LIMIT ?
-                        """,
-                        [*ai_queue_parameters, limit],
-                    ).fetchall()
+                primary_rows = self._get_sequential_ai_batch_rows(
+                    connection,
+                    primary_condition,
+                    primary_parameters,
+                    limit,
+                    last_scan_id,
+                )
+                if fallback_condition and len(primary_rows) < limit:
+                    fallback_rows = self._get_sequential_ai_batch_rows(
+                        connection,
+                        fallback_condition,
+                        fallback_parameters,
+                        limit - len(primary_rows),
+                        last_scan_id,
+                    )
 
+        rows = [*primary_rows, *fallback_rows]
         items = [self._row_to_entry(row) for row in rows]
-        next_scan_id = items[-1]["id"] if items else 0
+        if primary_rows:
+            next_scan_id = int(primary_rows[-1]["id"])
+        elif fallback_rows:
+            next_scan_id = int(fallback_rows[-1]["id"])
+        else:
+            next_scan_id = 0
         return {"items": items, "next_scan_id": next_scan_id}
 
     def apply_ai_annotations(
@@ -714,25 +788,68 @@ class WordService:
         return updated_count
 
     @staticmethod
-    def _fetch_entry_statuses(
+    def _fetch_entry_import_summaries(
         connection: sqlite3.Connection,
         phrases: list[str],
-    ) -> dict[str, str]:
+    ) -> dict[str, dict[str, Any]]:
         unique_phrases = list(dict.fromkeys(phrase for phrase in phrases if phrase))
         if not unique_phrases:
             return {}
 
-        statuses: dict[str, str] = {}
+        summaries: dict[str, dict[str, Any]] = {}
         for start in range(0, len(unique_phrases), SQLITE_IN_MAX_VARIABLES):
             chunk = unique_phrases[start : start + SQLITE_IN_MAX_VARIABLES]
             placeholders = ",".join("?" for _ in chunk)
             rows = connection.execute(
-                f"SELECT phrase, status FROM entries WHERE phrase IN ({placeholders})",
+                f"""
+                SELECT phrase, status, weight, weight_defined
+                FROM entries
+                WHERE phrase IN ({placeholders})
+                """,
                 chunk,
             ).fetchall()
             for row in rows:
-                statuses[row["phrase"]] = row["status"]
-        return statuses
+                summaries[row["phrase"]] = {
+                    "status": row["status"],
+                    "weight": row["weight"],
+                    "weight_defined": bool(row["weight_defined"]),
+                }
+        return summaries
+
+    @staticmethod
+    def _get_sequential_ai_batch_rows(
+        connection: sqlite3.Connection,
+        ai_queue_condition: str,
+        ai_queue_parameters: list[Any],
+        limit: int,
+        last_scan_id: int,
+    ) -> list[sqlite3.Row]:
+        rows = connection.execute(
+            f"""
+            SELECT *
+            FROM entries
+            WHERE {ai_queue_condition} AND id > ?
+            ORDER BY id ASC
+            LIMIT ?
+            """,
+            [*ai_queue_parameters, last_scan_id, limit],
+        ).fetchall()
+
+        remaining = limit - len(rows)
+        if remaining <= 0 or not last_scan_id:
+            return rows
+
+        wrapped_rows = connection.execute(
+            f"""
+            SELECT *
+            FROM entries
+            WHERE {ai_queue_condition} AND id <= ?
+            ORDER BY id ASC
+            LIMIT ?
+            """,
+            [*ai_queue_parameters, last_scan_id, remaining],
+        ).fetchall()
+        return [*rows, *wrapped_rows]
 
     @staticmethod
     def _get_random_ai_batch_rows(
@@ -989,7 +1106,9 @@ class WordService:
                 elif pinyin_provided:
                     next_pinyin = manual_pinyin or transliterate_phrase(current["phrase"])
 
-                next_weight = weight if weight is not None else current["weight"]
+                weight_provided = weight is not None
+                next_weight = weight if weight_provided else current["weight"]
+                next_weight_defined = True if weight_provided else current["weight_defined"]
                 next_status = status if status_provided else current["status"]
                 next_imported_at = imported_at or current["imported_at"]
 
@@ -1005,15 +1124,22 @@ class WordService:
                 connection.execute(
                     """
                     UPDATE entries
-                    SET pinyin = ?, weight = ?, status = ?, imported_at = ?, labeled_at = ?
+                    SET pinyin = ?, weight = ?, weight_defined = ?, status = ?, imported_at = ?, labeled_at = ?,
+                        ai_label = ?, ai_score = ?, ai_labeled_at = ?, ai_model = ?, ai_prompt_version = ?
                     WHERE id = ?
                     """,
                     (
                         next_pinyin,
                         next_weight,
+                        1 if next_weight_defined else 0,
                         next_status,
                         next_imported_at,
                         next_labeled_at,
+                        current.get("ai_label"),
+                        current.get("ai_score"),
+                        current.get("ai_labeled_at"),
+                        current.get("ai_model"),
+                        current.get("ai_prompt_version"),
                         current["id"],
                     ),
                 )
@@ -1069,11 +1195,13 @@ class WordService:
                 pinyin = current["pinyin"]
 
             weight = current["weight"]
+            weight_defined = current["weight_defined"]
             if "weight" in updates:
                 try:
                     weight = int(str(updates["weight"]).strip())
                 except ValueError as exc:
                     raise ValueError("词频必须是整数。") from exc
+                weight_defined = True
 
             status = current["status"]
             status_provided = "status" in updates
@@ -1101,16 +1229,23 @@ class WordService:
             elif status_provided and status in {ACCEPTED, REJECTED}:
                 labeled_at = self._now()
 
-            ai_label = None if phrase_changed else current.get("ai_label")
-            ai_score = None if phrase_changed else current.get("ai_score")
-            ai_labeled_at = None if phrase_changed else current.get("ai_labeled_at")
-            ai_model = None if phrase_changed else current.get("ai_model")
-            ai_prompt_version = None if phrase_changed else current.get("ai_prompt_version")
+            if phrase_changed:
+                ai_label = None
+                ai_score = None
+                ai_labeled_at = None
+                ai_model = None
+                ai_prompt_version = None
+            else:
+                ai_label = current.get("ai_label")
+                ai_score = current.get("ai_score")
+                ai_labeled_at = current.get("ai_labeled_at")
+                ai_model = current.get("ai_model")
+                ai_prompt_version = current.get("ai_prompt_version")
 
             connection.execute(
                 """
                 UPDATE entries
-                SET phrase = ?, pinyin = ?, weight = ?, status = ?, imported_at = ?, labeled_at = ?,
+                SET phrase = ?, pinyin = ?, weight = ?, weight_defined = ?, status = ?, imported_at = ?, labeled_at = ?,
                     ai_label = ?, ai_score = ?, ai_labeled_at = ?, ai_model = ?, ai_prompt_version = ?
                 WHERE id = ?
                 """,
@@ -1118,6 +1253,7 @@ class WordService:
                     phrase,
                     pinyin,
                     weight,
+                    1 if weight_defined else 0,
                     status,
                     imported_at,
                     labeled_at,
@@ -1363,6 +1499,7 @@ class WordService:
             "phrase": row["phrase"],
             "pinyin": row["pinyin"],
             "weight": row["weight"],
+            "weight_defined": bool(row["weight_defined"]) if "weight_defined" in row.keys() else False,
             "status": row["status"],
             "imported_at": row["imported_at"],
             "labeled_at": row["labeled_at"],
