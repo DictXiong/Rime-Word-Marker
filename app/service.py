@@ -17,6 +17,8 @@ from app.constants import ACCEPTED, DEFAULT_EXPORT_STATUSES, PENDING, REJECTED, 
 from app.pinyin_utils import transliterate_phrase
 
 YAML_HEADER_PATTERN = re.compile(r"^[A-Za-z_][\w-]*\s*:")
+USERDB_METADATA_PATTERN = re.compile(r"(?:^|\s)[cdt]=")
+USERDB_WEIGHT_PATTERN = re.compile(r"(?:^|\s)c=(\d+)(?:\s|$)")
 EXPORT_DICTIONARY_NAME_UNSAFE_PATTERN = re.compile(r"[^A-Za-z0-9_.-]+")
 DEFAULT_DICTIONARY_NAME = "rime_word_marker_export"
 DEFAULT_REVIEW_SESSION = "default"
@@ -177,9 +179,17 @@ class WordService:
             if in_yaml_header:
                 if stripped == "...":
                     in_yaml_header = False
-                continue
+                    continue
+                if stripped.startswith("#") or YAML_HEADER_PATTERN.match(stripped):
+                    continue
+                userdb_line = self._parse_userdb_import_line(raw_line)
+                if userdb_line is None:
+                    continue
+                in_yaml_header = False
+                parsed_line = userdb_line
+            else:
+                parsed_line = self._parse_import_line(raw_line)
 
-            parsed_line = self._parse_import_line(raw_line)
             if parsed_line is None:
                 continue
 
@@ -242,7 +252,14 @@ class WordService:
                     if overwrite_pinyin and has_pinyin:
                         update_fields.append("pinyin = ?")
                         update_values.append(pinyin)
-                    if overwrite_weight and has_weight:
+                    current_weight = int(current.get("weight") or 1)
+                    current_weight_defined = bool(current.get("weight_defined"))
+                    should_update_weight = (
+                        overwrite_weight
+                        and has_weight
+                        and (not current_weight_defined or weight > current_weight)
+                    )
+                    if should_update_weight:
                         update_fields.append("weight = ?")
                         update_values.append(weight)
                         update_fields.append("weight_defined = 1")
@@ -269,7 +286,7 @@ class WordService:
                         updated += 1
                         if overwrite_pinyin and has_pinyin:
                             updated_pinyin += 1
-                        if overwrite_weight and has_weight:
+                        if should_update_weight:
                             updated_weight += 1
                             current["weight"] = weight
                             current["weight_defined"] = True
@@ -310,6 +327,12 @@ class WordService:
             return None
 
         parts = [part.strip() for part in line.split("\t")]
+        userdb_line = self._parse_userdb_import_parts(parts)
+        if userdb_line is not None:
+            return userdb_line
+        if self._has_userdb_metadata(parts):
+            return None
+
         phrase = parts[0].strip()
         if not phrase:
             return None
@@ -319,6 +342,37 @@ class WordService:
         pinyin = parts[1] if has_pinyin else transliterate_phrase(phrase)
         weight = self._parse_weight(parts[2]) if len(parts) > 2 else 1
         return phrase, pinyin, weight, has_pinyin, has_weight
+
+    def _parse_userdb_import_line(
+        self,
+        raw_line: str,
+    ) -> tuple[str, str, int, bool, bool] | None:
+        line = raw_line.strip("\ufeff").rstrip("\n\r")
+        return self._parse_userdb_import_parts([part.strip() for part in line.split("\t")])
+
+    @classmethod
+    def _parse_userdb_import_parts(
+        cls,
+        parts: list[str],
+    ) -> tuple[str, str, int, bool, bool] | None:
+        if len(parts) < 3:
+            return None
+        pinyin = parts[0].strip()
+        phrase = parts[1].strip()
+        metadata = " ".join(part for part in parts[2:] if part).strip()
+        if not pinyin or not phrase or not metadata:
+            return None
+        match = USERDB_WEIGHT_PATTERN.search(metadata)
+        if match is None:
+            return None
+        return phrase, pinyin, int(match.group(1)), True, True
+
+    @staticmethod
+    def _has_userdb_metadata(parts: list[str]) -> bool:
+        if len(parts) < 3:
+            return False
+        metadata = " ".join(part for part in parts[2:] if part).strip()
+        return bool(USERDB_METADATA_PATTERN.search(metadata))
 
     @staticmethod
     def _parse_weight(raw_weight: str) -> int:

@@ -60,14 +60,14 @@
               <span>重复词条处理</span>
               <div class="checkbox-grid">
                 <label><input type="checkbox" id="importOverwritePinyin" /> 覆盖拼音</label>
-                <label><input type="checkbox" id="importOverwriteWeight" checked /> 覆盖词频</label>
+                <label><input type="checkbox" id="importOverwriteWeight" checked /> 更新词频</label>
                 <label><input type="checkbox" id="importMarkAccepted" /> 全部接受</label>
               </div>
             </div>
 
             <button class="primary-button" type="submit">导入词库</button>
             <p class="form-note">
-              支持直接上传 Rime 风格词典文件，或手动粘贴内容。新词条缺失拼音会补全，缺失词频会设为 1；重复词条仅在导入行提供对应列且勾选覆盖时更新。勾选“全部接受”会把本次导入涉及的词条直接标注为接受。
+              支持直接上传 Rime 风格词典文件，或手动粘贴内容。新词条缺失拼音会补全，缺失词频会设为 1；重复词条仅在导入行提供对应列且勾选对应选项时更新。勾选“更新词频”时会保留原词频和导入词频中的较大值；勾选“全部接受”会把本次导入涉及的词条直接标注为接受。
             </p>
             <div class="message-box" id="importMessage"></div>
           </form>

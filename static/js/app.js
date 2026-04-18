@@ -339,7 +339,7 @@ function bindEvents() {
             });
         const result = payload.result;
         const updateSummary = result.updated
-          ? `，更新 ${result.updated} 条重复词条（拼音 ${result.updated_pinyin}，词频 ${result.updated_weight}）`
+          ? `，更新 ${result.updated} 条重复词条（拼音 ${result.updated_pinyin}，词频升高/定义 ${result.updated_weight}）`
           : "";
         const acceptedSummary = result.accepted_marked
           ? `，本次标注接受 ${result.accepted_marked} 条`

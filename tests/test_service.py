@@ -46,6 +46,41 @@ class WordServiceTestCase(TestCase):
         self.assertEqual(result["accepted_existing"], 0)
         self.assertEqual(result["rejected_existing"], 0)
 
+    def test_import_supports_rime_userdb_format(self) -> None:
+        sample = "\n".join(
+            [
+                "# Rime user dictionary",
+                "#@/db_name\tluna_pinyin",
+                "#@/db_type\tuserdb",
+                "#@/rime_version\t1.13.1",
+                "#@/tick\t35",
+                "#@/user_id\tltp0",
+                "bu \t不\tc=1 d=0.909373 t=35",
+                "bu lai \t不來\tc=12 d=0.882497 t=35",
+            ]
+        )
+
+        result = self.service.import_text(sample)
+        entries = {
+            item["phrase"]: item
+            for item in self.service.list_entries(page=1, page_size=10)["items"]
+        }
+
+        self.assertEqual(result["parsed"], 2)
+        self.assertEqual(result["inserted"], 2)
+        self.assertEqual(entries["不"]["pinyin"], "bu")
+        self.assertEqual(entries["不"]["weight"], 1)
+        self.assertTrue(entries["不"]["weight_defined"])
+        self.assertEqual(entries["不來"]["pinyin"], "bu lai")
+        self.assertEqual(entries["不來"]["weight"], 12)
+        self.assertTrue(entries["不來"]["weight_defined"])
+
+    def test_import_skips_userdb_lines_without_c_weight(self) -> None:
+        result = self.service.import_text("bu \t不\td=0.909373 t=35")
+
+        self.assertEqual(result["parsed"], 0)
+        self.assertEqual(self.service.list_entries(page=1, page_size=10)["total"], 0)
+
     def test_import_can_control_existing_pinyin_and_weight_overwrites(self) -> None:
         self.service.import_text("测试\tce shi\t1")
 
@@ -98,6 +133,29 @@ class WordServiceTestCase(TestCase):
         self.assertTrue(entry["weight_defined"])
         self.assertEqual(result["updated"], 0)
         self.assertEqual(result["updated_weight"], 0)
+
+    def test_import_weight_update_keeps_larger_existing_weight(self) -> None:
+        self.service.import_text("测试\tce shi\t8")
+
+        result = self.service.import_text("测试\tce shi\t3")
+        entry = self.service.list_entries(page=1, page_size=10)["items"][0]
+
+        self.assertEqual(entry["weight"], 8)
+        self.assertTrue(entry["weight_defined"])
+        self.assertEqual(result["updated"], 0)
+        self.assertEqual(result["updated_weight"], 0)
+
+    def test_import_weight_update_defines_missing_existing_weight(self) -> None:
+        with mock.patch("app.service.transliterate_phrase", return_value="ce shi"):
+            self.service.import_text("测试")
+
+        result = self.service.import_text("测试\tce shi\t1")
+        entry = self.service.list_entries(page=1, page_size=10)["items"][0]
+
+        self.assertEqual(entry["weight"], 1)
+        self.assertTrue(entry["weight_defined"])
+        self.assertEqual(result["updated"], 1)
+        self.assertEqual(result["updated_weight"], 1)
 
     def test_import_weight_overwrite_preserves_ai_annotation(self) -> None:
         self.service.import_text("测试\tce shi\t8")
