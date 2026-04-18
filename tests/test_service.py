@@ -81,6 +81,37 @@ class WordServiceTestCase(TestCase):
         self.assertEqual(result["parsed"], 0)
         self.assertEqual(self.service.list_entries(page=1, page_size=10)["total"], 0)
 
+    def test_import_can_ignore_provided_pinyin(self) -> None:
+        with mock.patch("app.service.transliterate_phrase", return_value="nǐ hǎo"):
+            self.service.import_text("你好\tni hao\t5", ignore_pinyin=True)
+
+        entry = self.service.list_entries(page=1, page_size=10)["items"][0]
+
+        self.assertEqual(entry["pinyin"], "nǐ hǎo")
+        self.assertEqual(entry["weight"], 5)
+
+    def test_import_ignore_pinyin_does_not_recompute_existing_duplicates(self) -> None:
+        self.service.import_text("你好\tnǐ hǎo\t5")
+
+        with mock.patch("app.service.transliterate_phrase") as transliterate:
+            result = self.service.import_text("你好\tni hao\t9", ignore_pinyin=True)
+
+        entry = self.service.list_entries(page=1, page_size=10)["items"][0]
+
+        self.assertEqual(result["skipped"], 1)
+        self.assertEqual(result["updated_weight"], 1)
+        self.assertEqual(entry["pinyin"], "nǐ hǎo")
+        self.assertEqual(entry["weight"], 9)
+        transliterate.assert_not_called()
+
+    def test_import_rejects_conflicting_pinyin_options(self) -> None:
+        with self.assertRaises(ValueError):
+            self.service.import_text(
+                "你好\tni hao\t5",
+                ignore_pinyin=True,
+                overwrite_pinyin=True,
+            )
+
     def test_import_can_control_existing_pinyin_and_weight_overwrites(self) -> None:
         self.service.import_text("测试\tce shi\t1")
 
@@ -258,6 +289,24 @@ class WordServiceTestCase(TestCase):
 
         self.assertEqual(updated["weight"], 1)
         self.assertFalse(updated["weight_defined"])
+
+    def test_recompute_toneless_pinyin_updates_only_entries_without_tones(self) -> None:
+        self.service.import_text("中国\tzhong guo\t1\n你好\tnǐ hǎo\t1")
+
+        with mock.patch("app.service.transliterate_phrase", return_value="zhōng guó") as transliterate:
+            result = self.service.recompute_toneless_pinyin()
+
+        entries = {
+            item["phrase"]: item
+            for item in self.service.list_entries(page=1, page_size=10)["items"]
+        }
+
+        self.assertEqual(result["scanned"], 2)
+        self.assertEqual(result["matched"], 1)
+        self.assertEqual(result["updated"], 1)
+        self.assertEqual(entries["中国"]["pinyin"], "zhōng guó")
+        self.assertEqual(entries["你好"]["pinyin"], "nǐ hǎo")
+        transliterate.assert_called_once_with("中国")
 
     def test_import_skips_everything_between_yaml_markers(self) -> None:
         sample = "\n".join(
@@ -678,6 +727,18 @@ class WordServiceTestCase(TestCase):
         self.assertEqual([item["phrase"] for item in accepted_page["items"]], ["甲"])
         self.assertEqual([item["phrase"] for item in rejected_page["items"]], ["乙"])
         self.assertEqual([item["phrase"] for item in none_page["items"]], ["丙"])
+
+    def test_list_entries_can_filter_by_weight_range(self) -> None:
+        self.service.import_text("低频\tdi pin\t1\n中频\tzhong pin\t8\n高频\tgao pin\t20")
+
+        page = self.service.list_entries(page=1, page_size=10, min_weight=2, max_weight=10)
+
+        self.assertEqual(page["total"], 1)
+        self.assertEqual(page["items"][0]["phrase"], "中频")
+
+    def test_list_entries_rejects_invalid_weight_range(self) -> None:
+        with self.assertRaises(ValueError):
+            self.service.list_entries(page=1, page_size=10, min_weight=10, max_weight=2)
 
     def test_update_entry_clears_ai_annotation_when_phrase_changes(self) -> None:
         with mock.patch("app.service.transliterate_phrase", return_value="cè shì"):

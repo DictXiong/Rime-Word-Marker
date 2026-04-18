@@ -123,12 +123,16 @@ class AppHandler(SimpleHTTPRequestHandler):
                 status = query.get("status", ["all"])[0]
                 ai_status = query.get("ai_status", ["all"])[0]
                 keyword = query.get("q", [""])[0]
+                min_weight = _to_int(query.get("min_weight", [""])[0], default=None)
+                max_weight = _to_int(query.get("max_weight", [""])[0], default=None)
                 payload = _service().list_entries(
                     page=page,
                     page_size=page_size,
                     status=status,
                     ai_status=ai_status,
                     query=keyword,
+                    min_weight=min_weight,
+                    max_weight=max_weight,
                 )
                 self._send_json(200, payload)
                 return
@@ -203,6 +207,7 @@ class AppHandler(SimpleHTTPRequestHandler):
                 overwrite_pinyin = _load_bool(query.get("overwrite_pinyin", ["0"])[0], False)
                 overwrite_weight = _load_bool(query.get("overwrite_weight", ["1"])[0], True)
                 mark_accepted = _load_bool(query.get("mark_accepted", ["0"])[0], False)
+                ignore_pinyin = _load_bool(query.get("ignore_pinyin", ["0"])[0], False)
                 raw_body = self._read_raw_body()
                 if not raw_body.strip():
                     self._send_json(400, {"error": "导入文件不能为空。"})
@@ -216,6 +221,7 @@ class AppHandler(SimpleHTTPRequestHandler):
                     overwrite_pinyin=overwrite_pinyin,
                     overwrite_weight=overwrite_weight,
                     mark_accepted=mark_accepted,
+                    ignore_pinyin=ignore_pinyin,
                 )
                 _verbose_log_json(
                     "import-file",
@@ -225,6 +231,7 @@ class AppHandler(SimpleHTTPRequestHandler):
                         "overwrite_pinyin": overwrite_pinyin,
                         "overwrite_weight": overwrite_weight,
                         "mark_accepted": mark_accepted,
+                        "ignore_pinyin": ignore_pinyin,
                         "result": result,
                     },
                 )
@@ -241,11 +248,13 @@ class AppHandler(SimpleHTTPRequestHandler):
                 overwrite_pinyin = _load_bool(payload.get("overwrite_pinyin"), False)
                 overwrite_weight = _load_bool(payload.get("overwrite_weight"), True)
                 mark_accepted = _load_bool(payload.get("mark_accepted"), False)
+                ignore_pinyin = _load_bool(payload.get("ignore_pinyin"), False)
                 result = _service().import_text(
                     text,
                     overwrite_pinyin=overwrite_pinyin,
                     overwrite_weight=overwrite_weight,
                     mark_accepted=mark_accepted,
+                    ignore_pinyin=ignore_pinyin,
                 )
                 _verbose_log_json(
                     "import-text",
@@ -254,9 +263,16 @@ class AppHandler(SimpleHTTPRequestHandler):
                         "overwrite_pinyin": overwrite_pinyin,
                         "overwrite_weight": overwrite_weight,
                         "mark_accepted": mark_accepted,
+                        "ignore_pinyin": ignore_pinyin,
                         "result": result,
                     },
                 )
+                self._send_json(200, {"result": result, "stats": _service().get_stats()})
+                return
+
+            if parsed.path == "/api/maintenance/recompute-toneless-pinyin":
+                result = _service().recompute_toneless_pinyin()
+                _verbose_log_json("maintenance-recompute-toneless-pinyin", result)
                 self._send_json(200, {"result": result, "stats": _service().get_stats()})
                 return
 

@@ -744,6 +744,40 @@ textarea {
   margin-bottom: 18px;
 }
 
+.manage-filter-toolbar {
+  gap: 12px;
+}
+
+.manage-filter-toolbar .field.grow {
+  flex: 1 1 240px;
+  min-width: 220px;
+}
+
+.manage-filter-toolbar .slim-field {
+  flex: 0 1 132px;
+  min-width: 120px;
+}
+
+.manage-filter-toolbar .page-size-field {
+  flex: 0 1 120px;
+  min-width: 108px;
+}
+
+.range-field {
+  flex: 0 1 150px;
+  min-width: 136px;
+}
+
+.range-inputs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(56px, 1fr));
+  gap: 8px;
+}
+
+.range-inputs input {
+  padding-inline: 12px;
+}
+
 .panel-note {
   margin: 6px 0 0;
   color: var(--muted);
@@ -1446,6 +1480,14 @@ input[type="radio"] {
   .toolbar {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .manage-filter-toolbar .field.grow,
+  .manage-filter-toolbar .slim-field,
+  .manage-filter-toolbar .page-size-field,
+  .manage-filter-toolbar .range-field {
+    flex-basis: auto;
+    min-width: 0;
   }
 
   .ai-panel-grid {

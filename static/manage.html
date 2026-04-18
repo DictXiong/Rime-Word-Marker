@@ -59,13 +59,13 @@
           </article>
         </section>
 
-        <form class="toolbar" id="manageFilterForm">
+        <form class="toolbar manage-filter-toolbar" id="manageFilterForm">
           <label class="field compact grow">
             <span>搜索词条 / 拼音</span>
             <input type="text" id="manageQuery" placeholder="支持模糊搜索" />
           </label>
 
-          <label class="field compact">
+          <label class="field compact slim-field">
             <span>状态</span>
             <select id="manageStatus">
               <option value="all">全部</option>
@@ -75,7 +75,7 @@
             </select>
           </label>
 
-          <label class="field compact">
+          <label class="field compact slim-field">
             <span>AI 标注</span>
             <select id="manageAiStatus">
               <option value="all">全部</option>
@@ -86,7 +86,15 @@
             </select>
           </label>
 
-          <label class="field compact">
+          <div class="field compact range-field">
+            <span>词频范围</span>
+            <div class="range-inputs">
+              <input type="number" id="manageMinWeight" min="0" step="1" placeholder="最小" />
+              <input type="number" id="manageMaxWeight" min="0" step="1" placeholder="最大" />
+            </div>
+          </div>
+
+          <label class="field compact page-size-field">
             <span>每页数量</span>
             <select id="managePageSize">
               <option value="20">20</option>
@@ -133,6 +141,21 @@
             </div>
           </div>
           <p class="ai-panel-error" id="aiLastError" hidden></p>
+        </section>
+
+        <section class="panel-subsection ai-panel maintenance-panel">
+          <div class="ai-panel-head">
+            <div>
+              <h3>全局维护</h3>
+              <p class="panel-note">用于一次性整理整库数据。操作前建议先备份数据库。</p>
+            </div>
+            <button class="primary-button small-inline" type="button" id="recomputeTonelessPinyinButton">
+              全部重算声调
+            </button>
+          </div>
+          <p class="panel-note" id="maintenanceResult">
+            将把所有不带声调的拼音用内置拼音重新生成，已带声调的拼音不会被覆盖。
+          </p>
         </section>
 
         <section class="bulk-panel">

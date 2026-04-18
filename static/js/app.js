@@ -62,6 +62,8 @@ const state = {
     status: "all",
     aiStatus: "all",
     query: "",
+    minWeight: "",
+    maxWeight: "",
     totalPages: 1,
     currentItems: [],
     selectedIds: new Set(),
@@ -91,6 +93,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     state.manage.query = els.manageQuery?.value.trim() || "";
     state.manage.status = els.manageStatus?.value || "all";
     state.manage.aiStatus = els.manageAiStatus?.value || "all";
+    state.manage.minWeight = els.manageMinWeight?.value.trim() || "";
+    state.manage.maxWeight = els.manageMaxWeight?.value.trim() || "";
     state.manage.pageSize = Number(els.managePageSize?.value || state.manage.pageSize);
     await loadAiOverview();
     await loadManageEntries();
@@ -149,6 +153,7 @@ function cacheElements() {
   els.importFile = document.getElementById("importFile");
   els.importText = document.getElementById("importText");
   els.importOverwritePinyin = document.getElementById("importOverwritePinyin");
+  els.importIgnorePinyin = document.getElementById("importIgnorePinyin");
   els.importOverwriteWeight = document.getElementById("importOverwriteWeight");
   els.importMarkAccepted = document.getElementById("importMarkAccepted");
   els.importMessage = document.getElementById("importMessage");
@@ -165,6 +170,8 @@ function cacheElements() {
   els.manageQuery = document.getElementById("manageQuery");
   els.manageStatus = document.getElementById("manageStatus");
   els.manageAiStatus = document.getElementById("manageAiStatus");
+  els.manageMinWeight = document.getElementById("manageMinWeight");
+  els.manageMaxWeight = document.getElementById("manageMaxWeight");
   els.managePageSize = document.getElementById("managePageSize");
   els.entryList = document.getElementById("entryList");
   els.pageInfo = document.getElementById("pageInfo");
@@ -192,6 +199,8 @@ function cacheElements() {
   els.aiProgressUnlabeled = document.getElementById("aiProgressUnlabeled");
   els.aiProgressOutdated = document.getElementById("aiProgressOutdated");
   els.aiLastError = document.getElementById("aiLastError");
+  els.recomputeTonelessPinyinButton = document.getElementById("recomputeTonelessPinyinButton");
+  els.maintenanceResult = document.getElementById("maintenanceResult");
 
   els.entryEditDialog = document.getElementById("entryEditDialog");
   els.entryEditForm = document.getElementById("entryEditForm");
@@ -309,11 +318,21 @@ function bindEvents() {
   });
 
   if (els.importForm) {
+    syncImportPinyinOptions();
+    els.importIgnorePinyin?.addEventListener("change", syncImportPinyinOptions);
+    els.importOverwritePinyin?.addEventListener("change", () => {
+      if (els.importOverwritePinyin.checked && els.importIgnorePinyin) {
+        els.importIgnorePinyin.checked = false;
+      }
+      syncImportPinyinOptions();
+    });
+
     els.importForm.addEventListener("submit", async (event) => {
       event.preventDefault();
       const file = els.importFile.files?.[0] || null;
       const text = els.importText.value.trim();
       const overwritePinyin = !!els.importOverwritePinyin?.checked;
+      const ignorePinyin = !!els.importIgnorePinyin?.checked;
       const overwriteWeight = els.importOverwriteWeight?.checked !== false;
       const markAccepted = !!els.importMarkAccepted?.checked;
 
@@ -326,6 +345,7 @@ function bindEvents() {
         setImportBusy(true, file ? `正在导入文件：${file.name}` : "正在处理粘贴的词库内容");
         const importParams = new URLSearchParams({
           overwrite_pinyin: overwritePinyin ? "1" : "0",
+          ignore_pinyin: ignorePinyin ? "1" : "0",
           overwrite_weight: overwriteWeight ? "1" : "0",
           mark_accepted: markAccepted ? "1" : "0",
         });
@@ -334,6 +354,7 @@ function bindEvents() {
           : await postJSON("/api/import", {
               text,
               overwrite_pinyin: overwritePinyin,
+              ignore_pinyin: ignorePinyin,
               overwrite_weight: overwriteWeight,
               mark_accepted: markAccepted,
             });
@@ -390,6 +411,8 @@ function bindEvents() {
       state.manage.query = els.manageQuery.value.trim();
       state.manage.status = els.manageStatus.value;
       state.manage.aiStatus = els.manageAiStatus.value;
+      state.manage.minWeight = els.manageMinWeight?.value.trim() || "";
+      state.manage.maxWeight = els.manageMaxWeight?.value.trim() || "";
       state.manage.pageSize = Number(els.managePageSize.value);
       await loadManageEntries();
     });
@@ -435,6 +458,9 @@ function bindEvents() {
     els.openBulkEditButton.addEventListener("click", openBulkEditDialog);
     els.aiEnabledToggle?.addEventListener("change", async () => {
       await toggleAiEnabled(els.aiEnabledToggle.checked);
+    });
+    els.recomputeTonelessPinyinButton?.addEventListener("click", async () => {
+      await recomputeTonelessPinyin();
     });
 
     els.entryList.addEventListener("click", async (event) => {
@@ -510,6 +536,16 @@ function bindEvents() {
     ].forEach((checkbox) => {
       checkbox.addEventListener("change", updateBulkFieldStates);
     });
+  }
+}
+
+function syncImportPinyinOptions() {
+  if (!els.importIgnorePinyin || !els.importOverwritePinyin) return;
+  if (els.importIgnorePinyin.checked) {
+    els.importOverwritePinyin.checked = false;
+    els.importOverwritePinyin.disabled = true;
+  } else {
+    els.importOverwritePinyin.disabled = false;
   }
 }
 
@@ -681,6 +717,42 @@ async function toggleAiEnabled(enabled) {
     } else {
       els.aiEnabledToggle.disabled = false;
     }
+  }
+}
+
+async function recomputeTonelessPinyin() {
+  if (!els.recomputeTonelessPinyinButton) return;
+  const confirmed = window.confirm(
+    "将用内置拼音覆盖所有不带声调的拼音，已带声调的拼音不会被修改。建议确认已备份数据库。是否继续？",
+  );
+  if (!confirmed) return;
+
+  const button = els.recomputeTonelessPinyinButton;
+  const previousText = button.textContent;
+  button.disabled = true;
+  button.textContent = "重算中...";
+  if (els.maintenanceResult) {
+    els.maintenanceResult.textContent = "正在扫描整库并重算无声调拼音，请稍候。";
+  }
+
+  try {
+    const payload = await postJSON("/api/maintenance/recompute-toneless-pinyin", {});
+    const result = payload.result;
+    const summary =
+      `已扫描 ${result.scanned} 条，发现 ${result.matched} 条无声调拼音，实际更新 ${result.updated} 条。`;
+    if (els.maintenanceResult) {
+      els.maintenanceResult.textContent = summary;
+    }
+    await loadManageEntries();
+    showToast(summary);
+  } catch (error) {
+    if (els.maintenanceResult) {
+      els.maintenanceResult.textContent = error.message;
+    }
+    showToast(error.message, true);
+  } finally {
+    button.disabled = false;
+    button.textContent = previousText;
   }
 }
 
@@ -1076,6 +1148,12 @@ async function loadManageEntries() {
       ai_status: state.manage.aiStatus,
       q: state.manage.query,
     });
+    if (state.manage.minWeight) {
+      params.set("min_weight", state.manage.minWeight);
+    }
+    if (state.manage.maxWeight) {
+      params.set("max_weight", state.manage.maxWeight);
+    }
 
     const payload = await fetchJSON(`/api/entries?${params.toString()}`);
     state.manage.currentItems = payload.items;

@@ -19,6 +19,7 @@ from app.pinyin_utils import transliterate_phrase
 YAML_HEADER_PATTERN = re.compile(r"^[A-Za-z_][\w-]*\s*:")
 USERDB_METADATA_PATTERN = re.compile(r"(?:^|\s)[cdt]=")
 USERDB_WEIGHT_PATTERN = re.compile(r"(?:^|\s)c=(\d+)(?:\s|$)")
+PINYIN_TONE_MARK_PATTERN = re.compile(r"[āáǎàēéěèīíǐìōóǒòūúǔùǖǘǚǜńňǹḿ]")
 EXPORT_DICTIONARY_NAME_UNSAFE_PATTERN = re.compile(r"[^A-Za-z0-9_.-]+")
 DEFAULT_DICTIONARY_NAME = "rime_word_marker_export"
 DEFAULT_REVIEW_SESSION = "default"
@@ -156,7 +157,11 @@ class WordService:
         overwrite_pinyin: bool = False,
         overwrite_weight: bool = True,
         mark_accepted: bool = False,
+        ignore_pinyin: bool = False,
     ) -> dict[str, Any]:
+        if ignore_pinyin and overwrite_pinyin:
+            raise ValueError("“忽略拼音”和“覆盖拼音”不能同时启用。")
+
         inserted = 0
         skipped = 0
         updated = 0
@@ -206,6 +211,9 @@ class WordService:
 
             for line_number, phrase, pinyin, weight, has_pinyin, has_weight in parsed_entries:
                 if phrase not in known_entries:
+                    if ignore_pinyin:
+                        pinyin = transliterate_phrase(phrase)
+                        has_pinyin = True
                     next_status = ACCEPTED if mark_accepted else PENDING
                     next_labeled_at = imported_at if mark_accepted else None
                     try:
@@ -313,6 +321,42 @@ class WordService:
             "rejected_existing": rejected_existing,
             "imported_at": imported_at,
         }
+
+    def recompute_toneless_pinyin(self) -> dict[str, int]:
+        scanned = 0
+        matched = 0
+        updated = 0
+        updates: list[tuple[str, int]] = []
+
+        with self._managed_connection() as connection:
+            rows = connection.execute("SELECT id, phrase, pinyin FROM entries").fetchall()
+            for row in rows:
+                scanned += 1
+                current_pinyin = row["pinyin"] or ""
+                if self._pinyin_has_tone(current_pinyin):
+                    continue
+                matched += 1
+                next_pinyin = transliterate_phrase(row["phrase"])
+                if next_pinyin and next_pinyin != current_pinyin:
+                    updates.append((next_pinyin, int(row["id"])))
+
+            if updates:
+                connection.executemany(
+                    "UPDATE entries SET pinyin = ? WHERE id = ?",
+                    updates,
+                )
+                updated = len(updates)
+            connection.commit()
+
+        return {
+            "scanned": scanned,
+            "matched": matched,
+            "updated": updated,
+        }
+
+    @staticmethod
+    def _pinyin_has_tone(pinyin: str) -> bool:
+        return bool(PINYIN_TONE_MARK_PATTERN.search(pinyin or ""))
 
     def _parse_import_line(self, raw_line: str) -> tuple[str, str, int, bool, bool] | None:
         line = raw_line.strip("\ufeff").rstrip("\n\r")
@@ -1464,9 +1508,13 @@ class WordService:
         status: str | None = None,
         ai_status: str | None = None,
         query: str | None = None,
+        min_weight: int | None = None,
+        max_weight: int | None = None,
     ) -> dict[str, Any]:
         page = max(page, 1)
         page_size = min(max(page_size, 1), 100)
+        if min_weight is not None and max_weight is not None and min_weight > max_weight:
+            raise ValueError("词频下限不能大于上限。")
 
         where_clauses: list[str] = []
         parameters: list[Any] = []
@@ -1490,6 +1538,14 @@ class WordService:
             where_clauses.append("(phrase LIKE ? OR pinyin LIKE ?)")
             keyword = f"%{query.strip()}%"
             parameters.extend([keyword, keyword])
+
+        if min_weight is not None:
+            where_clauses.append("weight >= ?")
+            parameters.append(min_weight)
+
+        if max_weight is not None:
+            where_clauses.append("weight <= ?")
+            parameters.append(max_weight)
 
         where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
         offset = (page - 1) * page_size
