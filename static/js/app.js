@@ -50,6 +50,7 @@ const state = {
     canGoBack: false,
     mode: "random",
     preferAi: getStoredReviewPreferAi(),
+    markedCount: 0,
   },
   ai: {
     overview: null,
@@ -133,6 +134,7 @@ function cacheElements() {
 
   els.reviewCard = document.getElementById("reviewCard");
   els.reviewStatus = document.getElementById("reviewStatus");
+  els.reviewSessionCount = document.getElementById("reviewSessionCount");
   els.reviewWord = document.getElementById("reviewWord");
   els.reviewPinyin = document.getElementById("reviewPinyin");
   els.reviewWeight = document.getElementById("reviewWeight");
@@ -305,6 +307,9 @@ function bindEvents() {
         if (event.repeat) return;
         await agreeWithAiSuggestion();
       }
+    } else if (key === "ArrowUp" || ["w", "W", "i", "I", "0"].includes(key)) {
+      event.preventDefault();
+      goBackReviewHistory();
     } else if (key === "ArrowLeft" || ["j", "J", "1", "a", "A"].includes(key)) {
       event.preventDefault();
       await labelCurrent("accepted");
@@ -325,6 +330,11 @@ function bindEvents() {
         els.importIgnorePinyin.checked = false;
       }
       syncImportPinyinOptions();
+    });
+    els.importText?.addEventListener("keydown", (event) => {
+      if (event.key !== "Tab") return;
+      event.preventDefault();
+      insertTextAtSelection(els.importText, "\t");
     });
 
     els.importForm.addEventListener("submit", async (event) => {
@@ -547,6 +557,18 @@ function syncImportPinyinOptions() {
   } else {
     els.importOverwritePinyin.disabled = false;
   }
+}
+
+function insertTextAtSelection(input, text) {
+  if (!input) return;
+  const start = input.selectionStart ?? input.value.length;
+  const end = input.selectionEnd ?? input.value.length;
+  const before = input.value.slice(0, start);
+  const after = input.value.slice(end);
+  input.value = `${before}${text}${after}`;
+  const nextCursor = start + text.length;
+  input.selectionStart = nextCursor;
+  input.selectionEnd = nextCursor;
 }
 
 function bindDialogEvents(dialog, onClose) {
@@ -825,6 +847,18 @@ function jumpToReviewHistory(target) {
   renderReviewEntry(getCurrentReviewEntry(), direction);
 }
 
+function goBackReviewHistory() {
+  if (!state.review.timeline.length || state.review.pointer <= 0) {
+    showToast("已经是本次历史的第一条。", true);
+    return;
+  }
+
+  state.review.pointer -= 1;
+  state.review.canGoBack = state.review.pointer > 0;
+  updateReviewHistorySelect();
+  renderReviewEntry(getCurrentReviewEntry(), "back");
+}
+
 function updateReviewHistorySelect() {
   if (!els.reviewHistoryDropdown) return;
 
@@ -932,6 +966,11 @@ async function labelCurrent(status) {
     return;
   }
 
+  if (status === "pending") {
+    await skipCurrentReview();
+    return;
+  }
+
   flashReviewCard(status);
   const isReviewingHistory = state.review.pointer < state.review.timeline.length - 1;
 
@@ -942,6 +981,7 @@ async function labelCurrent(status) {
       if (status !== "pending") {
         state.review.timeline[state.review.pointer] = payload.entry;
       }
+      incrementReviewMarkedCount();
       state.review.pointer += 1;
       state.review.canGoBack = state.review.pointer > 0;
       updateReviewHistorySelect();
@@ -957,11 +997,41 @@ async function labelCurrent(status) {
       prefer_ai: state.review.preferAi,
     });
     syncEntryAcrossViews(payload.updated_entry, { renderReview: false });
+    incrementReviewMarkedCount();
     applyLabelResponse(payload);
     void loadManageEntries();
   } catch (error) {
     showToast(error.message, true);
   }
+}
+
+async function skipCurrentReview() {
+  const current = getCurrentReviewEntry();
+  if (!current) {
+    showToast("当前没有可跳过词条。", true);
+    return;
+  }
+
+  flashReviewCard("pending");
+  if (state.review.pointer < state.review.timeline.length - 1) {
+    state.review.pointer += 1;
+    state.review.canGoBack = state.review.pointer > 0;
+    updateReviewHistorySelect();
+    renderReviewEntry(getCurrentReviewEntry(), "next");
+    return;
+  }
+
+  await advanceReview("next", true);
+}
+
+function incrementReviewMarkedCount() {
+  state.review.markedCount += 1;
+  updateReviewMarkedCount();
+}
+
+function updateReviewMarkedCount() {
+  if (!els.reviewSessionCount) return;
+  els.reviewSessionCount.textContent = `本次已标注 ${state.review.markedCount}`;
 }
 
 async function agreeWithAiSuggestion() {
@@ -1199,6 +1269,18 @@ function renderEntryList(items) {
 
   els.entryList.innerHTML = `
     <table class="entry-table">
+      <colgroup>
+        <col class="col-select" />
+        <col class="col-id" />
+        <col class="col-phrase" />
+        <col class="col-pinyin" />
+        <col class="col-weight" />
+        <col class="col-status" />
+        <col class="col-ai-status" />
+        <col class="col-time" />
+        <col class="col-time" />
+        <col class="col-actions" />
+      </colgroup>
       <thead>
         <tr>
           <th class="col-select">选择</th>
@@ -1270,7 +1352,7 @@ function renderAiStatusCell(entry) {
 function renderManageButton(entry, status) {
   const activeClass = entry.status === status ? `active ${status}` : "";
   return `
-    <button class="mini-button ${activeClass}" data-entry-id="${entry.id}" data-status="${status}">
+    <button class="table-status-button table-${status} ${activeClass}" data-entry-id="${entry.id}" data-status="${status}">
       ${STATUS_LABELS[status]}
     </button>
   `;

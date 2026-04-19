@@ -1536,8 +1536,11 @@ class WordService:
 
         if query:
             where_clauses.append("(phrase LIKE ? OR pinyin LIKE ?)")
-            keyword = f"%{query.strip()}%"
+            normalized_query = query.strip()
+            keyword = f"%{normalized_query}%"
             parameters.extend([keyword, keyword])
+        else:
+            normalized_query = ""
 
         if min_weight is not None:
             where_clauses.append("weight >= ?")
@@ -1556,15 +1559,30 @@ class WordService:
                 parameters,
             ).fetchone()["total"]
 
+            if normalized_query:
+                order_sql = """
+                ORDER BY
+                    CASE
+                        WHEN phrase = ? THEN 0
+                        WHEN pinyin = ? THEN 1
+                        ELSE 2
+                    END,
+                    id DESC
+                """
+                order_parameters: list[Any] = [normalized_query, normalized_query]
+            else:
+                order_sql = "ORDER BY id DESC"
+                order_parameters = []
+
             rows = connection.execute(
                 f"""
                 SELECT *
                 FROM entries
                 {where_sql}
-                ORDER BY id DESC
+                {order_sql}
                 LIMIT ? OFFSET ?
                 """,
-                [*parameters, page_size, offset],
+                [*parameters, *order_parameters, page_size, offset],
             ).fetchall()
 
         items = [self._row_to_entry(row) for row in rows]

@@ -736,6 +736,13 @@ class WordServiceTestCase(TestCase):
         self.assertEqual(page["total"], 1)
         self.assertEqual(page["items"][0]["phrase"], "中频")
 
+    def test_list_entries_prioritizes_exact_phrase_match(self) -> None:
+        self.service.import_text("目标\tmu biao\t1\n目标延伸\tmu biao yan shen\t1")
+
+        page = self.service.list_entries(page=1, page_size=10, query="目标")
+
+        self.assertEqual([item["phrase"] for item in page["items"]], ["目标", "目标延伸"])
+
     def test_list_entries_rejects_invalid_weight_range(self) -> None:
         with self.assertRaises(ValueError):
             self.service.list_entries(page=1, page_size=10, min_weight=10, max_weight=2)

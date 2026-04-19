@@ -36,7 +36,10 @@
       <section class="panel review-panel">
         <div class="panel-head">
           <div>
-            <h2>逐条标注</h2>
+            <div class="review-title-row">
+              <h2>逐条标注</h2>
+              <span class="review-session-count" id="reviewSessionCount">本次已标注 0</span>
+            </div>
           </div>
           <div class="review-actions-top">
             <details class="help-menu">
@@ -47,7 +50,7 @@
                   <li>支持电脑键盘、手机触屏。</li>
                   <li>历史菜单可跳回任意过往词条，也可回到最新待定词。</li>
                   <li>保存拼音快捷键：`Ctrl/Cmd + S`。</li>
-                  <li>审核快捷键：`← / ↓ / →`、`J / K / L`、`1 / 2 / 3`、`A / S / D`；空格同意接受/拒绝类 AI 建议。</li>
+                  <li>审核快捷键：`← / →` 接受/拒绝，`↓` 跳过，`↑ / W / I / 0` 回到上一条；`J/K/L`、`1/2/3`、`A/S/D` 同样可用；空格同意接受/拒绝类 AI 建议。</li>
                 </ul>
               </div>
             </details>
@@ -96,7 +99,7 @@
             <span>接受</span>
           </button>
           <button class="decision-button pending" data-status="pending">
-            <span>待定</span>
+            <span>跳过</span>
           </button>
           <button class="decision-button reject" data-status="rejected">
             <span>拒绝</span>
