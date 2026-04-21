@@ -81,6 +81,15 @@ class WordServiceTestCase(TestCase):
         self.assertEqual(result["parsed"], 0)
         self.assertEqual(self.service.list_entries(page=1, page_size=10)["total"], 0)
 
+    def test_import_filters_zero_width_non_joiner(self) -> None:
+        result = self.service.import_text("你\u200c好\tn\u200cǐ hǎo\t5")
+
+        entry = self.service.list_entries(page=1, page_size=10)["items"][0]
+
+        self.assertEqual(result["parsed"], 1)
+        self.assertEqual(entry["phrase"], "你好")
+        self.assertEqual(entry["pinyin"], "nǐ hǎo")
+
     def test_import_can_ignore_provided_pinyin(self) -> None:
         with mock.patch("app.service.transliterate_phrase", return_value="nǐ hǎo"):
             self.service.import_text("你好\tni hao\t5", ignore_pinyin=True)
@@ -661,6 +670,22 @@ class WordServiceTestCase(TestCase):
         self.assertNotIn("\r", exported)
         self.assertNotIn('bad"', exported)
 
+    def test_export_dictionary_can_omit_yaml_header(self) -> None:
+        with mock.patch("app.service.transliterate_phrase", return_value="a"):
+            self.service.import_text("甲")
+
+        exported = self.service.export_dictionary(
+            statuses=["pending"],
+            include_weight=True,
+            omit_yaml_header=True,
+            dictionary_name="demo",
+        )
+
+        self.assertTrue(exported.startswith("甲\ta\t1\n"))
+        self.assertNotIn("---\n", exported)
+        self.assertNotIn("name: demo\n", exported)
+        self.assertNotIn("...\n", exported)
+
     def test_export_can_include_ai_assist_for_pending_entries(self) -> None:
         with mock.patch("app.service.transliterate_phrase", side_effect=["a", "b", "c"]):
             self.service.import_text("甲\n乙\n丙")
@@ -700,6 +725,94 @@ class WordServiceTestCase(TestCase):
         self.assertIn("甲\ta", exported)
         self.assertIn("乙\tb", exported)
         self.assertIn("丙\tc", exported)
+
+    def test_export_excludes_mixed_english_entries_by_default(self) -> None:
+        self.service.import_text(
+            "请你\tqǐng nǐ\t9\n来Q飞\tlái q fēi\t8\nOpenAI\topenai\t5"
+        )
+        entries = {
+            item["phrase"]: item
+            for item in self.service.list_entries(page=1, page_size=10)["items"]
+        }
+        for entry in entries.values():
+            self.service.update_status(entry["id"], "accepted")
+
+        exported = self.service.export_dictionary(statuses=["accepted"], include_weight=True)
+
+        self.assertEqual(self.service.count_export_entries(["accepted"]), 1)
+        self.assertIn("请你\tqǐng nǐ\t9", exported)
+        self.assertNotIn("来Q飞", exported)
+        self.assertNotIn("OpenAI", exported)
+
+    def test_export_can_output_mixed_only_dictionary_as_joined_full_pinyin(self) -> None:
+        self.service.import_text(
+            "请你\tqǐng nǐ\t9\n来Q飞\tlái q fēi\t8\nOpenAI助手\topenai zhù shǒu\t5"
+        )
+        entries = {
+            item["phrase"]: item
+            for item in self.service.list_entries(page=1, page_size=10)["items"]
+        }
+        for entry in entries.values():
+            self.service.update_status(entry["id"], "accepted")
+
+        exported = self.service.export_dictionary(
+            statuses=["accepted"],
+            include_weight=True,
+            include_mixed=True,
+            mixed_scheme="full_pinyin",
+        )
+
+        self.assertEqual(
+            self.service.count_export_entries(["accepted"], include_mixed=True),
+            2,
+        )
+        self.assertNotIn("请你\tqǐng nǐ\t9", exported)
+        self.assertIn("来Q飞\tláiqfēi\t8", exported)
+        self.assertIn("OpenAI助手\topenaizhùshǒu\t5", exported)
+        self.assertNotIn("lái q fēi", exported)
+
+    def test_export_can_include_mixed_entries_as_ziranma_shuangpin(self) -> None:
+        self.service.import_text("来Q飞\tlái q fēi\t8")
+        entry = self.service.list_entries(page=1, page_size=10)["items"][0]
+        self.service.update_status(entry["id"], "accepted")
+
+        exported = self.service.export_dictionary(
+            statuses=["accepted"],
+            include_weight=True,
+            include_mixed=True,
+            mixed_scheme="ziranma",
+        )
+
+        self.assertIn("来Q飞\tllqfz\t8", exported)
+
+    def test_export_shuangpin_schemes_keep_jqxy_standalone_u_as_u(self) -> None:
+        self.service.import_text("T恤\tt xù\t8")
+        entry = self.service.list_entries(page=1, page_size=10)["items"][0]
+        self.service.update_status(entry["id"], "accepted")
+
+        for scheme in ("ziranma", "abc", "flypy", "microsoft", "sogou", "ziguang"):
+            with self.subTest(scheme=scheme):
+                exported = self.service.export_dictionary(
+                    statuses=["accepted"],
+                    include_weight=True,
+                    include_mixed=True,
+                    mixed_scheme=scheme,
+                    omit_yaml_header=True,
+                )
+
+                self.assertEqual(exported, "T恤\ttxu\t8\n")
+
+    def test_export_rejects_unknown_mixed_scheme(self) -> None:
+        self.service.import_text("来Q飞\tlái q fēi\t8")
+        entry = self.service.list_entries(page=1, page_size=10)["items"][0]
+        self.service.update_status(entry["id"], "accepted")
+
+        with self.assertRaises(ValueError):
+            self.service.export_dictionary(
+                statuses=["accepted"],
+                include_mixed=True,
+                mixed_scheme="unknown",
+            )
 
     def test_list_entries_can_filter_by_ai_status(self) -> None:
         with mock.patch("app.service.transliterate_phrase", side_effect=["a", "b", "c"]):

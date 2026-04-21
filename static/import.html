@@ -97,7 +97,7 @@
             </div>
 
             <label class="field inline">
-              <input type="checkbox" id="includeWeight" />
+              <input type="checkbox" id="includeWeight" checked />
               <span>导出时包含词频</span>
             </label>
 
@@ -105,6 +105,33 @@
               <input type="checkbox" id="includeAiAssist" checked />
               <span>包含 AI 辅助</span>
             </label>
+
+            <label class="field inline">
+              <input type="checkbox" id="omitYamlHeader" />
+              <span>不包含 YAML 文件头</span>
+            </label>
+
+            <div class="field">
+              <span>中英混杂词汇</span>
+              <div class="export-mixed-options">
+                <label class="field inline compact-inline">
+                  <input type="checkbox" id="includeMixedWords" />
+                  <span>导出中英混杂/全英文专用词典</span>
+                </label>
+                <select id="mixedPinyinScheme" disabled>
+                  <option value="full_pinyin">全拼</option>
+                  <option value="ziranma">自然码双拼</option>
+                  <option value="abc">智能 ABC 双拼</option>
+                  <option value="flypy">小鹤双拼</option>
+                  <option value="microsoft">微软双拼</option>
+                  <option value="sogou">搜狗双拼</option>
+                  <option value="ziguang">紫光双拼</option>
+                </select>
+              </div>
+              <p class="form-note small-note">
+                中英混杂词汇必须单独导出为专用词典。默认导出普通词条并排除含英文词条；勾选后只导出含英文词条，并把编码合并为一个整体，避免英文片段污染简拼。勾选“不包含 YAML 文件头”后，导出文件第一行会直接从词条开始。
+              </p>
+            </div>
 
             <button class="primary-button alt" type="submit">导出为 Rime YAML</button>
             <p class="export-count-note" id="exportCountNote">当前选择将导出 0 条词条。</p>

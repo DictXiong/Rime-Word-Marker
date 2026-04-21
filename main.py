@@ -23,7 +23,7 @@ from app.ai import (
     estimate_ai_max_tokens,
 )
 from app.service import DEFAULT_REVIEW_SESSION, WordService
-from app.pinyin_utils import transliterate_phrase
+from app.pinyin_utils import normalize_mixed_export_scheme, transliterate_phrase
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
@@ -146,6 +146,13 @@ class AppHandler(SimpleHTTPRequestHandler):
 
                 include_weight = query.get("include_weight", ["0"])[0] == "1"
                 include_ai_assist = query.get("include_ai_assist", ["0"])[0] == "1"
+                include_mixed = query.get("include_mixed", ["0"])[0] == "1"
+                omit_yaml_header = query.get("omit_yaml_header", ["0"])[0] == "1"
+                mixed_scheme = (
+                    normalize_mixed_export_scheme(query.get("mixed_scheme", ["full_pinyin"])[0])
+                    if include_mixed
+                    else "full_pinyin"
+                )
                 dictionary_name = WordService.normalize_export_dictionary_name(
                     query.get("name", ["rime_word_marker_export"])[0]
                 )
@@ -161,6 +168,9 @@ class AppHandler(SimpleHTTPRequestHandler):
                     statuses=statuses,
                     include_weight=include_weight,
                     include_ai_assist=include_ai_assist,
+                    include_mixed=include_mixed,
+                    mixed_scheme=mixed_scheme,
+                    omit_yaml_header=omit_yaml_header,
                     dictionary_name=dictionary_name,
                 ):
                     self.wfile.write(line.encode("utf-8"))
@@ -173,12 +183,14 @@ class AppHandler(SimpleHTTPRequestHandler):
                 for value in raw_statuses:
                     statuses.extend(item for item in value.split(",") if item)
                 include_ai_assist = query.get("include_ai_assist", ["0"])[0] == "1"
+                include_mixed = query.get("include_mixed", ["0"])[0] == "1"
                 self._send_json(
                     200,
                     {
                         "count": _service().count_export_entries(
                             statuses=statuses,
                             include_ai_assist=include_ai_assist,
+                            include_mixed=include_mixed,
                         )
                     },
                 )

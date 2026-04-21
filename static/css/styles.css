@@ -1068,6 +1068,26 @@ input[type="radio"] {
   gap: 10px;
 }
 
+.field.inline.compact-inline {
+  width: auto;
+}
+
+.export-mixed-options {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.export-mixed-options select {
+  flex: 1 1 180px;
+  max-width: 260px;
+}
+
+.small-note {
+  font-size: 0.9rem;
+}
+
 .primary-button {
   padding: 14px 18px;
   background: linear-gradient(135deg, #133b40, #0d6772);

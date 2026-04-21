@@ -164,6 +164,9 @@ function cacheElements() {
   els.exportName = document.getElementById("exportName");
   els.includeWeight = document.getElementById("includeWeight");
   els.includeAiAssist = document.getElementById("includeAiAssist");
+  els.omitYamlHeader = document.getElementById("omitYamlHeader");
+  els.includeMixedWords = document.getElementById("includeMixedWords");
+  els.mixedPinyinScheme = document.getElementById("mixedPinyinScheme");
   els.exportCountNote = document.getElementById("exportCountNote");
   els.importLoadingOverlay = document.getElementById("importLoadingOverlay");
   els.importLoadingText = document.getElementById("importLoadingText");
@@ -340,7 +343,7 @@ function bindEvents() {
     els.importForm.addEventListener("submit", async (event) => {
       event.preventDefault();
       const file = els.importFile.files?.[0] || null;
-      const text = els.importText.value.trim();
+      const text = cleanImportText(els.importText.value).trim();
       const overwritePinyin = !!els.importOverwritePinyin?.checked;
       const ignorePinyin = !!els.importIgnorePinyin?.checked;
       const overwriteWeight = els.importOverwriteWeight?.checked !== false;
@@ -403,12 +406,22 @@ function bindEvents() {
       params.set("statuses", statuses.join(","));
       params.set("include_weight", els.includeWeight.checked ? "1" : "0");
       params.set("include_ai_assist", els.includeAiAssist.checked ? "1" : "0");
+      params.set("omit_yaml_header", els.omitYamlHeader?.checked ? "1" : "0");
+      params.set("include_mixed", els.includeMixedWords?.checked ? "1" : "0");
+      params.set("mixed_scheme", els.mixedPinyinScheme?.value || "full_pinyin");
       params.set("name", els.exportName.value.trim() || "rime_word_marker_export");
       window.location.href = `/api/export?${params.toString()}`;
     });
 
-    [els.includeAiAssist, ...document.querySelectorAll('input[name="exportStatus"]')].forEach((input) => {
+    syncMixedExportOptions();
+    [
+      els.includeAiAssist,
+      els.includeMixedWords,
+      els.mixedPinyinScheme,
+      ...document.querySelectorAll('input[name="exportStatus"]'),
+    ].filter(Boolean).forEach((input) => {
       input.addEventListener("change", () => {
+        syncMixedExportOptions();
         void updateExportCount();
       });
     });
@@ -557,6 +570,10 @@ function syncImportPinyinOptions() {
   } else {
     els.importOverwritePinyin.disabled = false;
   }
+}
+
+function cleanImportText(text) {
+  return String(text || "").replace(/\u200c/g, "");
 }
 
 function insertTextAtSelection(input, text) {
@@ -1622,6 +1639,11 @@ function getSelectedExportStatuses() {
   return [...document.querySelectorAll('input[name="exportStatus"]:checked')].map((input) => input.value);
 }
 
+function syncMixedExportOptions() {
+  if (!els.includeMixedWords || !els.mixedPinyinScheme) return;
+  els.mixedPinyinScheme.disabled = !els.includeMixedWords.checked;
+}
+
 async function updateExportCount() {
   if (!els.exportCountNote) return;
 
@@ -1634,8 +1656,15 @@ async function updateExportCount() {
   try {
     const params = new URLSearchParams({ statuses: statuses.join(",") });
     params.set("include_ai_assist", els.includeAiAssist?.checked ? "1" : "0");
+    params.set("include_mixed", els.includeMixedWords?.checked ? "1" : "0");
     const payload = await fetchJSON(`/api/export/count?${params.toString()}`);
-    els.exportCountNote.textContent = `当前选择将导出 ${payload.count} 条词条${els.includeAiAssist?.checked ? "（含 AI 辅助）" : ""}。`;
+    const exportMode = els.includeMixedWords?.checked
+      ? "仅导出中英混杂/全英文专用词典"
+      : "导出普通词典，不含中英混杂/全英文词条";
+    const extras = [
+      els.includeAiAssist?.checked ? "含 AI 辅助" : "",
+    ].filter(Boolean);
+    els.exportCountNote.textContent = `当前选择将导出 ${payload.count} 条词条（${[exportMode, ...extras].join("，")}）。`;
   } catch (error) {
     els.exportCountNote.textContent = `无法计算导出数量：${error.message}`;
   }
