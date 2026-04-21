@@ -146,6 +146,28 @@ class WordServiceTestCase(TestCase):
         self.assertEqual(result["updated_pinyin"], 1)
         self.assertEqual(result["updated_weight"], 0)
 
+    def test_import_can_skip_new_entries_and_update_existing_entries(self) -> None:
+        self.service.import_text("旧词\tjiù cí\t3")
+
+        result = self.service.import_text(
+            "旧词\tjiù cí xīn\t9\n新词\txīn cí\t8",
+            overwrite_pinyin=True,
+            skip_new_entries=True,
+        )
+        entries = {
+            item["phrase"]: item
+            for item in self.service.list_entries(page=1, page_size=10)["items"]
+        }
+
+        self.assertEqual(result["parsed"], 2)
+        self.assertEqual(result["inserted"], 0)
+        self.assertEqual(result["skipped"], 1)
+        self.assertEqual(result["skipped_new"], 1)
+        self.assertEqual(result["updated"], 1)
+        self.assertEqual(entries["旧词"]["pinyin"], "jiù cí xīn")
+        self.assertEqual(entries["旧词"]["weight"], 9)
+        self.assertNotIn("新词", entries)
+
     def test_reimporting_existing_entries_does_not_advance_next_insert_id(self) -> None:
         self.service.import_text("甲\ta\t1\n乙\tb\t2\n丙\tc\t3")
         self.service.import_text("甲\ta\t11\n乙\tb\t12\n丙\tc\t13")
@@ -316,6 +338,28 @@ class WordServiceTestCase(TestCase):
         self.assertEqual(entries["中国"]["pinyin"], "zhōng guó")
         self.assertEqual(entries["你好"]["pinyin"], "nǐ hǎo")
         transliterate.assert_called_once_with("中国")
+
+    def test_cap_rejected_weights_only_caps_rejected_entries_above_limit(self) -> None:
+        self.service.import_text("拒高\tjù gāo\t88\n拒低\tjù dī\t8\n收高\tshōu gāo\t99")
+        entries = {
+            item["phrase"]: item
+            for item in self.service.list_entries(page=1, page_size=10)["items"]
+        }
+        self.service.update_status(entries["拒高"]["id"], "rejected")
+        self.service.update_status(entries["拒低"]["id"], "rejected")
+        self.service.update_status(entries["收高"]["id"], "accepted")
+
+        result = self.service.cap_rejected_weights()
+
+        entries = {
+            item["phrase"]: item
+            for item in self.service.list_entries(page=1, page_size=10)["items"]
+        }
+        self.assertEqual(result, {"cap": 10, "updated": 1})
+        self.assertEqual(entries["拒高"]["weight"], 10)
+        self.assertTrue(entries["拒高"]["weight_defined"])
+        self.assertEqual(entries["拒低"]["weight"], 8)
+        self.assertEqual(entries["收高"]["weight"], 99)
 
     def test_import_skips_everything_between_yaml_markers(self) -> None:
         sample = "\n".join(

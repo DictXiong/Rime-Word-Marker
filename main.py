@@ -220,6 +220,7 @@ class AppHandler(SimpleHTTPRequestHandler):
                 overwrite_weight = _load_bool(query.get("overwrite_weight", ["1"])[0], True)
                 mark_accepted = _load_bool(query.get("mark_accepted", ["0"])[0], False)
                 ignore_pinyin = _load_bool(query.get("ignore_pinyin", ["0"])[0], False)
+                skip_new_entries = _load_bool(query.get("skip_new_entries", ["0"])[0], False)
                 raw_body = self._read_raw_body()
                 if not raw_body.strip():
                     self._send_json(400, {"error": "导入文件不能为空。"})
@@ -234,6 +235,7 @@ class AppHandler(SimpleHTTPRequestHandler):
                     overwrite_weight=overwrite_weight,
                     mark_accepted=mark_accepted,
                     ignore_pinyin=ignore_pinyin,
+                    skip_new_entries=skip_new_entries,
                 )
                 _verbose_log_json(
                     "import-file",
@@ -244,6 +246,7 @@ class AppHandler(SimpleHTTPRequestHandler):
                         "overwrite_weight": overwrite_weight,
                         "mark_accepted": mark_accepted,
                         "ignore_pinyin": ignore_pinyin,
+                        "skip_new_entries": skip_new_entries,
                         "result": result,
                     },
                 )
@@ -261,12 +264,14 @@ class AppHandler(SimpleHTTPRequestHandler):
                 overwrite_weight = _load_bool(payload.get("overwrite_weight"), True)
                 mark_accepted = _load_bool(payload.get("mark_accepted"), False)
                 ignore_pinyin = _load_bool(payload.get("ignore_pinyin"), False)
+                skip_new_entries = _load_bool(payload.get("skip_new_entries"), False)
                 result = _service().import_text(
                     text,
                     overwrite_pinyin=overwrite_pinyin,
                     overwrite_weight=overwrite_weight,
                     mark_accepted=mark_accepted,
                     ignore_pinyin=ignore_pinyin,
+                    skip_new_entries=skip_new_entries,
                 )
                 _verbose_log_json(
                     "import-text",
@@ -276,6 +281,7 @@ class AppHandler(SimpleHTTPRequestHandler):
                         "overwrite_weight": overwrite_weight,
                         "mark_accepted": mark_accepted,
                         "ignore_pinyin": ignore_pinyin,
+                        "skip_new_entries": skip_new_entries,
                         "result": result,
                     },
                 )
@@ -285,6 +291,12 @@ class AppHandler(SimpleHTTPRequestHandler):
             if parsed.path == "/api/maintenance/recompute-toneless-pinyin":
                 result = _service().recompute_toneless_pinyin()
                 _verbose_log_json("maintenance-recompute-toneless-pinyin", result)
+                self._send_json(200, {"result": result, "stats": _service().get_stats()})
+                return
+
+            if parsed.path == "/api/maintenance/cap-rejected-weights":
+                result = _service().cap_rejected_weights()
+                _verbose_log_json("maintenance-cap-rejected-weights", result)
                 self._send_json(200, {"result": result, "stats": _service().get_stats()})
                 return
 

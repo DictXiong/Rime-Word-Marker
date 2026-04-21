@@ -164,6 +164,7 @@ class WordService:
         overwrite_weight: bool = True,
         mark_accepted: bool = False,
         ignore_pinyin: bool = False,
+        skip_new_entries: bool = False,
     ) -> dict[str, Any]:
         if ignore_pinyin and overwrite_pinyin:
             raise ValueError("“忽略拼音”和“覆盖拼音”不能同时启用。")
@@ -172,6 +173,7 @@ class WordService:
 
         inserted = 0
         skipped = 0
+        skipped_new = 0
         updated = 0
         updated_pinyin = 0
         updated_weight = 0
@@ -219,6 +221,9 @@ class WordService:
 
             for line_number, phrase, pinyin, weight, has_pinyin, has_weight in parsed_entries:
                 if phrase not in known_entries:
+                    if skip_new_entries:
+                        skipped_new += 1
+                        continue
                     if ignore_pinyin:
                         pinyin = transliterate_phrase(phrase)
                         has_pinyin = True
@@ -321,6 +326,7 @@ class WordService:
             "parsed": parsed,
             "inserted": inserted,
             "skipped": skipped,
+            "skipped_new": skipped_new,
             "updated": updated,
             "updated_pinyin": updated_pinyin,
             "updated_weight": updated_weight,
@@ -366,6 +372,36 @@ class WordService:
         return {
             "scanned": scanned,
             "matched": matched,
+            "updated": updated,
+        }
+
+    def cap_rejected_weights(self, cap: int = 10) -> dict[str, int]:
+        if cap < 1:
+            raise ValueError("词频上限必须大于 0。")
+
+        with self._managed_connection() as connection:
+            row = connection.execute(
+                """
+                SELECT COUNT(*) AS total
+                FROM entries
+                WHERE status = ? AND weight > ?
+                """,
+                (REJECTED, cap),
+            ).fetchone()
+            updated = int(row["total"]) if row else 0
+            if updated:
+                connection.execute(
+                    """
+                    UPDATE entries
+                    SET weight = ?, weight_defined = 1
+                    WHERE status = ? AND weight > ?
+                    """,
+                    (cap, REJECTED, cap),
+                )
+            connection.commit()
+
+        return {
+            "cap": cap,
             "updated": updated,
         }
 

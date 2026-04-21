@@ -158,6 +158,7 @@ function cacheElements() {
   els.importIgnorePinyin = document.getElementById("importIgnorePinyin");
   els.importOverwriteWeight = document.getElementById("importOverwriteWeight");
   els.importMarkAccepted = document.getElementById("importMarkAccepted");
+  els.importSkipNewEntries = document.getElementById("importSkipNewEntries");
   els.importMessage = document.getElementById("importMessage");
 
   els.exportForm = document.getElementById("exportForm");
@@ -205,6 +206,7 @@ function cacheElements() {
   els.aiProgressOutdated = document.getElementById("aiProgressOutdated");
   els.aiLastError = document.getElementById("aiLastError");
   els.recomputeTonelessPinyinButton = document.getElementById("recomputeTonelessPinyinButton");
+  els.capRejectedWeightsButton = document.getElementById("capRejectedWeightsButton");
   els.maintenanceResult = document.getElementById("maintenanceResult");
 
   els.entryEditDialog = document.getElementById("entryEditDialog");
@@ -348,6 +350,7 @@ function bindEvents() {
       const ignorePinyin = !!els.importIgnorePinyin?.checked;
       const overwriteWeight = els.importOverwriteWeight?.checked !== false;
       const markAccepted = !!els.importMarkAccepted?.checked;
+      const skipNewEntries = !!els.importSkipNewEntries?.checked;
 
       if (!file && !text) {
         showMessage("请先选择文件或粘贴导入内容。");
@@ -361,6 +364,7 @@ function bindEvents() {
           ignore_pinyin: ignorePinyin ? "1" : "0",
           overwrite_weight: overwriteWeight ? "1" : "0",
           mark_accepted: markAccepted ? "1" : "0",
+          skip_new_entries: skipNewEntries ? "1" : "0",
         });
         const payload = file
           ? await postRawText(`/api/import-file?${importParams.toString()}`, file)
@@ -370,6 +374,7 @@ function bindEvents() {
               ignore_pinyin: ignorePinyin,
               overwrite_weight: overwriteWeight,
               mark_accepted: markAccepted,
+              skip_new_entries: skipNewEntries,
             });
         const result = payload.result;
         const updateSummary = result.updated
@@ -378,7 +383,10 @@ function bindEvents() {
         const acceptedSummary = result.accepted_marked
           ? `，本次标注接受 ${result.accepted_marked} 条`
           : "";
-        const summary = `词库包含 ${result.parsed} 条，其中 ${result.inserted} 条新词条${updateSummary}${acceptedSummary}，${result.accepted_existing} 条已被标注为接受，${result.rejected_existing} 条已被标注为拒绝。`;
+        const skippedNewSummary = result.skipped_new
+          ? `，跳过 ${result.skipped_new} 条新词条`
+          : "";
+        const summary = `词库包含 ${result.parsed} 条，其中 ${result.inserted} 条新词条${skippedNewSummary}${updateSummary}${acceptedSummary}，${result.accepted_existing} 条已被标注为接受，${result.rejected_existing} 条已被标注为拒绝。`;
         showMessage(summary);
         els.importText.value = "";
         els.importFile.value = "";
@@ -484,6 +492,9 @@ function bindEvents() {
     });
     els.recomputeTonelessPinyinButton?.addEventListener("click", async () => {
       await recomputeTonelessPinyin();
+    });
+    els.capRejectedWeightsButton?.addEventListener("click", async () => {
+      await capRejectedWeights();
     });
 
     els.entryList.addEventListener("click", async (event) => {
@@ -782,6 +793,42 @@ async function recomputeTonelessPinyin() {
     if (els.maintenanceResult) {
       els.maintenanceResult.textContent = summary;
     }
+    await loadManageEntries();
+    showToast(summary);
+  } catch (error) {
+    if (els.maintenanceResult) {
+      els.maintenanceResult.textContent = error.message;
+    }
+    showToast(error.message, true);
+  } finally {
+    button.disabled = false;
+    button.textContent = previousText;
+  }
+}
+
+async function capRejectedWeights() {
+  if (!els.capRejectedWeightsButton) return;
+  const confirmed = window.confirm(
+    "将把所有人工拒绝词条的词频截断为 min(10, 原词频)，建议确认已备份数据库。是否继续？",
+  );
+  if (!confirmed) return;
+
+  const button = els.capRejectedWeightsButton;
+  const previousText = button.textContent;
+  button.disabled = true;
+  button.textContent = "处理中...";
+  if (els.maintenanceResult) {
+    els.maintenanceResult.textContent = "正在截断人工拒绝词条的词频，请稍候。";
+  }
+
+  try {
+    const payload = await postJSON("/api/maintenance/cap-rejected-weights", {});
+    const result = payload.result;
+    const summary = `已将 ${result.updated} 条人工拒绝词条的词频截断为不超过 ${result.cap}。`;
+    if (els.maintenanceResult) {
+      els.maintenanceResult.textContent = summary;
+    }
+    await refreshStats(payload.stats);
     await loadManageEntries();
     showToast(summary);
   } catch (error) {

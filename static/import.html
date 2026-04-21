@@ -63,12 +63,13 @@
                 <label><input type="checkbox" id="importIgnorePinyin" /> 忽略拼音</label>
                 <label><input type="checkbox" id="importOverwriteWeight" checked /> 更新词频</label>
                 <label><input type="checkbox" id="importMarkAccepted" /> 全部接受</label>
+                <label><input type="checkbox" id="importSkipNewEntries" /> 不新建词条</label>
               </div>
             </div>
 
             <button class="primary-button" type="submit">导入词库</button>
             <p class="form-note">
-              支持直接上传 Rime 风格词典文件，或手动粘贴内容。新词条缺失拼音会补全，缺失词频会设为 1；重复词条仅在导入行提供对应列且勾选对应选项时更新。“忽略拼音”会丢弃导入文件中的拼音并使用内置拼音生成，不能和“覆盖拼音”同时启用。勾选“更新词频”时会保留原词频和导入词频中的较大值；勾选“全部接受”会把本次导入涉及的词条直接标注为接受。
+              支持直接上传 Rime 风格词典文件，或手动粘贴内容。新词条缺失拼音会补全，缺失词频会设为 1；重复词条仅在导入行提供对应列且勾选对应选项时更新。“忽略拼音”会丢弃导入文件中的拼音并使用内置拼音生成，不能和“覆盖拼音”同时启用。勾选“更新词频”时会保留原词频和导入词频中的较大值；勾选“全部接受”会把本次导入涉及的词条直接标注为接受；勾选“不新建词条”后，新词条会被跳过，仅更新数据库中已有词条。
             </p>
             <div class="message-box" id="importMessage"></div>
           </form>

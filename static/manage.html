@@ -149,12 +149,17 @@
               <h3>全局维护</h3>
               <p class="panel-note">用于一次性整理整库数据。操作前建议先备份数据库。</p>
             </div>
-            <button class="primary-button small-inline" type="button" id="recomputeTonelessPinyinButton">
-              全部重算声调
-            </button>
+            <div class="maintenance-actions">
+              <button class="primary-button small-inline" type="button" id="recomputeTonelessPinyinButton">
+                全部重算声调
+              </button>
+              <button class="primary-button small-inline alt" type="button" id="capRejectedWeightsButton">
+                截断拒绝词频
+              </button>
+            </div>
           </div>
           <p class="panel-note" id="maintenanceResult">
-            将把所有不带声调的拼音用内置拼音重新生成，已带声调的拼音不会被覆盖。
+            可重算无声调拼音，或把人工拒绝词条的词频统一截断为不超过 10。
           </p>
         </section>
 

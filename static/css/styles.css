@@ -824,6 +824,13 @@ textarea {
   margin: 0;
 }
 
+.maintenance-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
 .switch-field {
   display: inline-flex;
   align-items: center;
