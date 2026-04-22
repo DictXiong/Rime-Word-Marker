@@ -1,3 +1,4 @@
+import sqlite3
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import TestCase, mock
@@ -89,6 +90,32 @@ class WordServiceTestCase(TestCase):
         self.assertEqual(result["parsed"], 1)
         self.assertEqual(entry["phrase"], "你好")
         self.assertEqual(entry["pinyin"], "nǐ hǎo")
+
+    def test_import_can_backup_database_before_writing(self) -> None:
+        self.service.import_text("旧词\tjiù cí\t3")
+
+        result = self.service.import_text(
+            "新词\txīn cí\t7",
+            backup_before_import=True,
+        )
+        backup_path = Path(result["backup_path"])
+
+        self.assertTrue(backup_path.exists())
+        self.assertRegex(backup_path.name, r"^test\.db\.backup_\d{14}(?:_\d+)?$")
+        connection = sqlite3.connect(backup_path)
+        try:
+            backup_phrases = {
+                row[0]
+                for row in connection.execute("SELECT phrase FROM entries ORDER BY id").fetchall()
+            }
+        finally:
+            connection.close()
+
+        current_phrases = {
+            item["phrase"] for item in self.service.list_entries(page=1, page_size=10)["items"]
+        }
+        self.assertEqual(backup_phrases, {"旧词"})
+        self.assertEqual(current_phrases, {"旧词", "新词"})
 
     def test_import_can_ignore_provided_pinyin(self) -> None:
         with mock.patch("app.service.transliterate_phrase", return_value="nǐ hǎo"):

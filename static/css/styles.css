@@ -408,6 +408,16 @@ textarea {
   gap: 22px;
 }
 
+.grid-two > .panel {
+  position: relative;
+  z-index: 1;
+}
+
+.grid-two > .panel:hover,
+.grid-two > .panel:focus-within {
+  z-index: 30;
+}
+
 .feature-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1073,6 +1083,99 @@ input[type="radio"] {
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+.has-tip {
+  position: relative;
+  cursor: help;
+}
+
+.has-tip::before,
+.has-tip::after {
+  position: absolute;
+  left: 0;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.16s ease, transform 0.16s ease;
+  z-index: 80;
+}
+
+.has-tip::before {
+  content: "";
+  bottom: calc(100% + 3px);
+  width: 12px;
+  height: 12px;
+  background: rgba(24, 50, 54, 0.96);
+  transform: translate(18px, 4px) rotate(45deg);
+}
+
+.has-tip::after {
+  content: attr(data-tip);
+  bottom: calc(100% + 9px);
+  width: max-content;
+  max-width: min(360px, calc(100vw - 48px));
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(24, 50, 54, 0.96);
+  box-shadow: 0 18px 42px rgba(20, 35, 38, 0.22);
+  color: #fff;
+  font-size: 0.86rem;
+  font-weight: 700;
+  line-height: 1.45;
+  white-space: normal;
+  transform: translateY(4px);
+}
+
+.has-tip:hover::before,
+.has-tip:hover::after,
+.has-tip:focus-within::before,
+.has-tip:focus-within::after {
+  opacity: 1;
+}
+
+.has-tip:hover::before,
+.has-tip:focus-within::before {
+  transform: translate(18px, 0) rotate(45deg);
+}
+
+.has-tip:hover::after,
+.has-tip:focus-within::after {
+  transform: translateY(0);
+}
+
+.js-tooltips .has-tip::before,
+.js-tooltips .has-tip::after {
+  display: none;
+}
+
+.floating-tooltip {
+  position: fixed;
+  z-index: 1000;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(24, 50, 54, 0.96);
+  box-shadow: 0 18px 42px rgba(20, 35, 38, 0.22);
+  color: #fff;
+  font-size: 0.86rem;
+  font-weight: 700;
+  line-height: 1.45;
+  pointer-events: none;
+}
+
+.floating-tooltip::before {
+  content: "";
+  position: absolute;
+  left: var(--tip-arrow-left, 24px);
+  bottom: -5px;
+  width: 12px;
+  height: 12px;
+  background: rgba(24, 50, 54, 0.96);
+  transform: translateX(-50%) rotate(45deg);
+}
+
+.floating-tooltip.below::before {
+  top: -5px;
+  bottom: auto;
 }
 
 .field.inline.compact-inline {

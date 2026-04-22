@@ -1,9 +1,44 @@
+from http.server import ThreadingHTTPServer
 from unittest import TestCase
 
-from main import _load_ai_config
+from main import (
+    ThreadingHTTPServerV6,
+    _format_bind_url,
+    _load_ai_config,
+    _load_hosts,
+    _normalize_hosts,
+    _server_address,
+    _server_class,
+)
 
 
 class ConfigTestCase(TestCase):
+    def test_normalize_hosts_accepts_arrays_commas_and_ipv6_brackets(self) -> None:
+        self.assertEqual(
+            _normalize_hosts(["127.0.0.1, 0.0.0.0", "[::1]", "127.0.0.1"]),
+            ["127.0.0.1", "0.0.0.0", "::1"],
+        )
+
+    def test_load_hosts_uses_config_and_cli_override(self) -> None:
+        self.assertEqual(_load_hosts({"host": ["127.0.0.1", "::1"]}, None), ["127.0.0.1", "::1"])
+        self.assertEqual(
+            _load_hosts({"host": "127.0.0.1"}, ["0.0.0.0", "::"]),
+            ["0.0.0.0", "::"],
+        )
+        self.assertEqual(
+            _load_hosts({"hosts": "127.0.0.1,::1", "host": "0.0.0.0"}, None),
+            ["127.0.0.1", "::1"],
+        )
+
+    def test_bind_helpers_support_ipv4_and_ipv6(self) -> None:
+        self.assertEqual(_server_class("127.0.0.1"), ThreadingHTTPServer)
+        self.assertEqual(_server_address("127.0.0.1", 8000), ("127.0.0.1", 8000))
+        self.assertEqual(_format_bind_url("127.0.0.1", 8000), "http://127.0.0.1:8000")
+
+        self.assertEqual(_server_class("::1"), ThreadingHTTPServerV6)
+        self.assertEqual(_server_address("::1", 8000), ("::1", 8000, 0, 0))
+        self.assertEqual(_format_bind_url("::1", 8000), "http://[::1]:8000")
+
     def test_ai_max_tokens_adapts_to_batch_size_when_unset(self) -> None:
         config = {
             "ai": {

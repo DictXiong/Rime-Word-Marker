@@ -165,11 +165,13 @@ class WordService:
         mark_accepted: bool = False,
         ignore_pinyin: bool = False,
         skip_new_entries: bool = False,
+        backup_before_import: bool = False,
     ) -> dict[str, Any]:
         if ignore_pinyin and overwrite_pinyin:
             raise ValueError("“忽略拼音”和“覆盖拼音”不能同时启用。")
 
         raw_text = self._clean_import_text(raw_text)
+        backup_path = str(self.backup_database()) if backup_before_import else None
 
         inserted = 0
         skipped = 0
@@ -334,6 +336,7 @@ class WordService:
             "accepted_existing": accepted_existing,
             "rejected_existing": rejected_existing,
             "imported_at": imported_at,
+            "backup_path": backup_path,
         }
 
     @staticmethod
@@ -342,6 +345,24 @@ class WordService:
         for char in IMPORT_IGNORED_CHARACTERS:
             cleaned = cleaned.replace(char, "")
         return cleaned
+
+    def backup_database(self) -> Path:
+        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        backup_path = Path(f"{self.db_path}.backup_{timestamp}")
+        suffix_index = 1
+        while backup_path.exists():
+            backup_path = Path(f"{self.db_path}.backup_{timestamp}_{suffix_index}")
+            suffix_index += 1
+
+        with self._managed_connection() as source:
+            source.execute("PRAGMA wal_checkpoint(FULL)")
+            target = sqlite3.connect(backup_path)
+            try:
+                source.backup(target)
+            finally:
+                target.close()
+
+        return backup_path
 
     def recompute_toneless_pinyin(self) -> dict[str, int]:
         scanned = 0

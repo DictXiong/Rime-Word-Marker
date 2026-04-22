@@ -82,6 +82,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   state.activeView = getCurrentPage();
   cacheElements();
   bindEvents();
+  initTooltips();
   updateSelectedCount();
   await refreshStats();
 
@@ -109,6 +110,78 @@ document.addEventListener("DOMContentLoaded", async () => {
     startAiOverviewPolling();
   }
 });
+
+function initTooltips() {
+  const triggers = [...document.querySelectorAll(".has-tip[data-tip]")];
+  if (!triggers.length) return;
+
+  document.body.classList.add("js-tooltips");
+  const tooltip = document.createElement("div");
+  tooltip.className = "floating-tooltip";
+  tooltip.hidden = true;
+  tooltip.setAttribute("role", "tooltip");
+  document.body.appendChild(tooltip);
+
+  let activeTrigger = null;
+
+  const show = (trigger) => {
+    const text = trigger.dataset.tip || "";
+    if (!text) return;
+    activeTrigger = trigger;
+    tooltip.textContent = text;
+    tooltip.hidden = false;
+    positionTooltip(trigger, tooltip);
+  };
+
+  const hide = (trigger) => {
+    if (activeTrigger !== trigger) return;
+    activeTrigger = null;
+    tooltip.hidden = true;
+  };
+
+  triggers.forEach((trigger) => {
+    trigger.addEventListener("mouseenter", () => show(trigger));
+    trigger.addEventListener("mouseleave", () => hide(trigger));
+    trigger.addEventListener("focusin", () => show(trigger));
+    trigger.addEventListener("focusout", () => hide(trigger));
+  });
+
+  ["scroll", "resize"].forEach((eventName) => {
+    window.addEventListener(
+      eventName,
+      () => {
+        if (!activeTrigger || tooltip.hidden) return;
+        positionTooltip(activeTrigger, tooltip);
+      },
+      { passive: true },
+    );
+  });
+}
+
+function positionTooltip(trigger, tooltip) {
+  const margin = 12;
+  const rect = trigger.getBoundingClientRect();
+  tooltip.style.maxWidth = `${Math.max(120, Math.min(360, window.innerWidth - margin * 2))}px`;
+  tooltip.classList.remove("below");
+
+  const tooltipRect = tooltip.getBoundingClientRect();
+  const maxLeft = window.innerWidth - tooltipRect.width - margin;
+  const left = Math.max(margin, Math.min(rect.left, maxLeft));
+  let top = rect.top - tooltipRect.height - margin;
+
+  if (top < margin) {
+    top = rect.bottom + margin;
+    tooltip.classList.add("below");
+  }
+  const maxTop = window.innerHeight - tooltipRect.height - margin;
+  top = Math.max(margin, Math.min(top, maxTop));
+
+  const anchorCenter = rect.left + rect.width / 2;
+  const arrowLeft = Math.max(18, Math.min(anchorCenter - left, tooltipRect.width - 18));
+  tooltip.style.left = `${left}px`;
+  tooltip.style.top = `${top}px`;
+  tooltip.style.setProperty("--tip-arrow-left", `${arrowLeft}px`);
+}
 
 function getStoredReviewPreferAi() {
   try {
@@ -159,6 +232,7 @@ function cacheElements() {
   els.importOverwriteWeight = document.getElementById("importOverwriteWeight");
   els.importMarkAccepted = document.getElementById("importMarkAccepted");
   els.importSkipNewEntries = document.getElementById("importSkipNewEntries");
+  els.importBackupBeforeImport = document.getElementById("importBackupBeforeImport");
   els.importMessage = document.getElementById("importMessage");
 
   els.exportForm = document.getElementById("exportForm");
@@ -351,6 +425,7 @@ function bindEvents() {
       const overwriteWeight = els.importOverwriteWeight?.checked !== false;
       const markAccepted = !!els.importMarkAccepted?.checked;
       const skipNewEntries = !!els.importSkipNewEntries?.checked;
+      const backupBeforeImport = !!els.importBackupBeforeImport?.checked;
 
       if (!file && !text) {
         showMessage("请先选择文件或粘贴导入内容。");
@@ -365,6 +440,7 @@ function bindEvents() {
           overwrite_weight: overwriteWeight ? "1" : "0",
           mark_accepted: markAccepted ? "1" : "0",
           skip_new_entries: skipNewEntries ? "1" : "0",
+          backup_before_import: backupBeforeImport ? "1" : "0",
         });
         const payload = file
           ? await postRawText(`/api/import-file?${importParams.toString()}`, file)
@@ -375,6 +451,7 @@ function bindEvents() {
               overwrite_weight: overwriteWeight,
               mark_accepted: markAccepted,
               skip_new_entries: skipNewEntries,
+              backup_before_import: backupBeforeImport,
             });
         const result = payload.result;
         const updateSummary = result.updated
@@ -386,7 +463,8 @@ function bindEvents() {
         const skippedNewSummary = result.skipped_new
           ? `，跳过 ${result.skipped_new} 条新词条`
           : "";
-        const summary = `词库包含 ${result.parsed} 条，其中 ${result.inserted} 条新词条${skippedNewSummary}${updateSummary}${acceptedSummary}，${result.accepted_existing} 条已被标注为接受，${result.rejected_existing} 条已被标注为拒绝。`;
+        const backupSummary = result.backup_path ? `已备份到 ${result.backup_path}。` : "";
+        const summary = `词库包含 ${result.parsed} 条，其中 ${result.inserted} 条新词条${skippedNewSummary}${updateSummary}${acceptedSummary}，${result.accepted_existing} 条已被标注为接受，${result.rejected_existing} 条已被标注为拒绝。${backupSummary}`;
         showMessage(summary);
         els.importText.value = "";
         els.importFile.value = "";
@@ -781,24 +859,18 @@ async function recomputeTonelessPinyin() {
   const previousText = button.textContent;
   button.disabled = true;
   button.textContent = "重算中...";
-  if (els.maintenanceResult) {
-    els.maintenanceResult.textContent = "正在扫描整库并重算无声调拼音，请稍候。";
-  }
+  showMaintenanceResult("正在扫描整库并重算无声调拼音，请稍候。");
 
   try {
     const payload = await postJSON("/api/maintenance/recompute-toneless-pinyin", {});
     const result = payload.result;
     const summary =
       `已扫描 ${result.scanned} 条，发现 ${result.matched} 条无声调拼音，实际更新 ${result.updated} 条。`;
-    if (els.maintenanceResult) {
-      els.maintenanceResult.textContent = summary;
-    }
+    showMaintenanceResult(summary);
     await loadManageEntries();
     showToast(summary);
   } catch (error) {
-    if (els.maintenanceResult) {
-      els.maintenanceResult.textContent = error.message;
-    }
+    showMaintenanceResult(error.message);
     showToast(error.message, true);
   } finally {
     button.disabled = false;
@@ -817,29 +889,29 @@ async function capRejectedWeights() {
   const previousText = button.textContent;
   button.disabled = true;
   button.textContent = "处理中...";
-  if (els.maintenanceResult) {
-    els.maintenanceResult.textContent = "正在截断人工拒绝词条的词频，请稍候。";
-  }
+  showMaintenanceResult("正在截断人工拒绝词条的词频，请稍候。");
 
   try {
     const payload = await postJSON("/api/maintenance/cap-rejected-weights", {});
     const result = payload.result;
     const summary = `已将 ${result.updated} 条人工拒绝词条的词频截断为不超过 ${result.cap}。`;
-    if (els.maintenanceResult) {
-      els.maintenanceResult.textContent = summary;
-    }
+    showMaintenanceResult(summary);
     await refreshStats(payload.stats);
     await loadManageEntries();
     showToast(summary);
   } catch (error) {
-    if (els.maintenanceResult) {
-      els.maintenanceResult.textContent = error.message;
-    }
+    showMaintenanceResult(error.message);
     showToast(error.message, true);
   } finally {
     button.disabled = false;
     button.textContent = previousText;
   }
+}
+
+function showMaintenanceResult(message) {
+  if (!els.maintenanceResult) return;
+  els.maintenanceResult.hidden = false;
+  els.maintenanceResult.textContent = message;
 }
 
 async function ensureReviewEntry(forceAdvanceIfEmpty = false) {

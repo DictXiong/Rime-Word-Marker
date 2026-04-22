@@ -16,7 +16,7 @@
 - 审核快捷键支持 `←/↓/→`、`J/K/L`、`1/2/3`、`A/S/D`，并可用 `Space` 采纳 AI 建议
 - 词库管理页支持分页、搜索、词频范围筛选、单条编辑、批量修改
 - 词库管理页提供全局维护区，可批量重算无声调拼音
-- 导入大词库时提供“导入中”遮罩与导入结果摘要
+- 导入大词库时提供“导入中”遮罩、可选导入前备份与导入结果摘要
 
 ## 页面说明
 
@@ -66,6 +66,12 @@ http://127.0.0.1:8000
 .venv/bin/python main.py --host 0.0.0.0 --port 8000
 ```
 
+如果要同时监听 IPv4 和 IPv6 地址，可以重复传入 `--host`，或使用逗号分隔：
+
+```bash
+.venv/bin/python main.py --host 0.0.0.0 --host :: --port 8000
+```
+
 ## 配置
 
 应用支持命令行参数，也支持 JSON 配置文件。
@@ -73,12 +79,12 @@ http://127.0.0.1:8000
 ### 命令行参数
 
 ```bash
-.venv/bin/python main.py --host 0.0.0.0 --port 8000 --db-path /data/rime-marker/words.db
+.venv/bin/python main.py --host 0.0.0.0 --host :: --port 8000 --db-path /data/rime-marker/words.db
 ```
 
 支持参数：
 
-- `--host`：监听地址
+- `--host`：监听地址，可重复指定，也可用逗号分隔多个地址
 - `--port`：监听端口
 - `--db-path`：SQLite 数据库文件路径
 - `--config`：配置文件路径
@@ -90,7 +96,7 @@ http://127.0.0.1:8000
 
 ```json
 {
-  "host": "127.0.0.1",
+  "host": ["127.0.0.1"],
   "port": 8000,
   "db_path": "./data/words.db",
   "verbose": false,
@@ -109,6 +115,8 @@ http://127.0.0.1:8000
 ```
 
 `ai.max_tokens` 为 `null` 或省略时会按 `ai.batch_size` 自动估算；如需手动固定输出上限，也可以直接填整数。
+
+`host` 可以写成单个字符串或字符串数组；也支持使用 `hosts` 字段表达多个监听地址。例如同时监听 IPv4 / IPv6：`"host": ["0.0.0.0", "::"]`。
 
 使用方式：
 

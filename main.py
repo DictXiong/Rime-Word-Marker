@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import socket
+import threading
 from datetime import datetime
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -44,6 +46,15 @@ ENTRY_DETAIL_RE = re.compile(r"^/api/entries/(\d+)$")
 ENTRY_STATUS_RE = re.compile(r"^/api/entries/(\d+)/status$")
 ENTRY_UPDATE_RE = re.compile(r"^/api/entries/(\d+)/update$")
 SESSION_KEY_RE = re.compile(r"^[A-Za-z0-9._-]{1,120}$")
+
+
+class ThreadingHTTPServerV6(ThreadingHTTPServer):
+    address_family = socket.AF_INET6
+
+    def server_bind(self) -> None:
+        if hasattr(socket, "IPV6_V6ONLY"):
+            self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+        super().server_bind()
 
 
 class AppHandler(SimpleHTTPRequestHandler):
@@ -221,6 +232,10 @@ class AppHandler(SimpleHTTPRequestHandler):
                 mark_accepted = _load_bool(query.get("mark_accepted", ["0"])[0], False)
                 ignore_pinyin = _load_bool(query.get("ignore_pinyin", ["0"])[0], False)
                 skip_new_entries = _load_bool(query.get("skip_new_entries", ["0"])[0], False)
+                backup_before_import = _load_bool(
+                    query.get("backup_before_import", ["0"])[0],
+                    False,
+                )
                 raw_body = self._read_raw_body()
                 if not raw_body.strip():
                     self._send_json(400, {"error": "导入文件不能为空。"})
@@ -236,6 +251,7 @@ class AppHandler(SimpleHTTPRequestHandler):
                     mark_accepted=mark_accepted,
                     ignore_pinyin=ignore_pinyin,
                     skip_new_entries=skip_new_entries,
+                    backup_before_import=backup_before_import,
                 )
                 _verbose_log_json(
                     "import-file",
@@ -247,6 +263,7 @@ class AppHandler(SimpleHTTPRequestHandler):
                         "mark_accepted": mark_accepted,
                         "ignore_pinyin": ignore_pinyin,
                         "skip_new_entries": skip_new_entries,
+                        "backup_before_import": backup_before_import,
                         "result": result,
                     },
                 )
@@ -265,6 +282,7 @@ class AppHandler(SimpleHTTPRequestHandler):
                 mark_accepted = _load_bool(payload.get("mark_accepted"), False)
                 ignore_pinyin = _load_bool(payload.get("ignore_pinyin"), False)
                 skip_new_entries = _load_bool(payload.get("skip_new_entries"), False)
+                backup_before_import = _load_bool(payload.get("backup_before_import"), False)
                 result = _service().import_text(
                     text,
                     overwrite_pinyin=overwrite_pinyin,
@@ -272,6 +290,7 @@ class AppHandler(SimpleHTTPRequestHandler):
                     mark_accepted=mark_accepted,
                     ignore_pinyin=ignore_pinyin,
                     skip_new_entries=skip_new_entries,
+                    backup_before_import=backup_before_import,
                 )
                 _verbose_log_json(
                     "import-text",
@@ -282,6 +301,7 @@ class AppHandler(SimpleHTTPRequestHandler):
                         "mark_accepted": mark_accepted,
                         "ignore_pinyin": ignore_pinyin,
                         "skip_new_entries": skip_new_entries,
+                        "backup_before_import": backup_before_import,
                         "result": result,
                     },
                 )
@@ -547,6 +567,54 @@ def _load_bool(raw_value, default: bool = False) -> bool:
     return default
 
 
+def _normalize_hosts(raw_hosts) -> list[str]:
+    if raw_hosts is None:
+        return []
+
+    if isinstance(raw_hosts, (list, tuple)):
+        raw_values = raw_hosts
+    else:
+        raw_values = [raw_hosts]
+
+    hosts: list[str] = []
+    for raw_value in raw_values:
+        for raw_host in str(raw_value).split(","):
+            host = raw_host.strip()
+            if host.startswith("[") and host.endswith("]"):
+                host = host[1:-1]
+            if host and host not in hosts:
+                hosts.append(host)
+    return hosts
+
+
+def _load_hosts(config: dict, cli_hosts: list[str] | None) -> list[str]:
+    configured_hosts = config.get("hosts", config.get("host"))
+    hosts = _normalize_hosts(configured_hosts) or ["127.0.0.1"]
+    if cli_hosts:
+        hosts = _normalize_hosts(cli_hosts) or hosts
+    return hosts
+
+
+def _is_ipv6_host(host: str) -> bool:
+    return ":" in host
+
+
+def _server_address(host: str, port: int):
+    if _is_ipv6_host(host):
+        return (host, port, 0, 0)
+    return (host, port)
+
+
+def _server_class(host: str):
+    return ThreadingHTTPServerV6 if _is_ipv6_host(host) else ThreadingHTTPServer
+
+
+def _format_bind_url(host: str, port: int) -> str:
+    if _is_ipv6_host(host):
+        return f"http://[{host}]:{port}"
+    return f"http://{host}:{port}"
+
+
 def _load_ai_config(config: dict, verbose: bool = False) -> AIConfig:
     raw_ai = config.get("ai", {})
     if not isinstance(raw_ai, dict):
@@ -602,7 +670,11 @@ def _load_ai_config(config: dict, verbose: bool = False) -> AIConfig:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the Rime Word Marker web app.")
-    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument(
+        "--host",
+        action="append",
+        help="监听地址；可重复指定，也可用逗号分隔多个地址。",
+    )
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--db-path", help="SQLite 数据库文件路径。")
     parser.add_argument("--config", default=str(DEFAULT_CONFIG_PATH), help="配置文件路径（JSON）。")
@@ -613,14 +685,12 @@ def main() -> None:
     config = _load_config(config_path)
     config_base_dir = config_path.parent if config_path.exists() else BASE_DIR
 
-    host = str(config.get("host", args.host))
+    hosts = _load_hosts(config, args.host)
     port = int(config.get("port", args.port))
     db_path = _resolve_path(config.get("db_path"), config_base_dir) or DEFAULT_DB_PATH
     verbose = _load_bool(config.get("verbose"), False) or args.verbose
     ai_config = _load_ai_config(config, verbose=verbose)
 
-    if args.host != parser.get_default("host"):
-        host = args.host
     if args.port != parser.get_default("port"):
         port = args.port
     if args.db_path:
@@ -633,17 +703,47 @@ def main() -> None:
     AI_WORKER.start()
 
     handler = partial(AppHandler, directory=str(STATIC_DIR))
+    servers: list[tuple[str, ThreadingHTTPServer]] = []
+    threads: list[threading.Thread] = []
+    started_servers: list[ThreadingHTTPServer] = []
     try:
-        with ThreadingHTTPServer((host, port), handler) as httpd:
-            _log(f"Rime Word Marker running at http://{host}:{port}")
-            _log(f"Using database: {db_path}")
-            _log(f"Verbose logging: {'on' if verbose else 'off'}")
-            if ai_config.is_configured():
-                _log(f"AI annotation ready: {ai_config.model} @ {ai_config.request_url}")
-            else:
-                _log("AI annotation disabled: AI endpoint/model not configured")
-            httpd.serve_forever()
+        for host in hosts:
+            httpd = _server_class(host)(_server_address(host, port), handler)
+            servers.append((host, httpd))
+
+        _log(
+            "Rime Word Marker running at "
+            + ", ".join(_format_bind_url(host, port) for host, _ in servers)
+        )
+        _log(f"Using database: {db_path}")
+        _log(f"Verbose logging: {'on' if verbose else 'off'}")
+        if ai_config.is_configured():
+            _log(f"AI annotation ready: {ai_config.model} @ {ai_config.request_url}")
+        else:
+            _log("AI annotation disabled: AI endpoint/model not configured")
+
+        for host, httpd in servers:
+            thread = threading.Thread(
+                target=httpd.serve_forever,
+                name=f"http-{host}-{port}",
+                daemon=True,
+            )
+            thread.start()
+            threads.append(thread)
+            started_servers.append(httpd)
+
+        stop_wait = threading.Event()
+        while any(thread.is_alive() for thread in threads):
+            stop_wait.wait(1)
+    except KeyboardInterrupt:
+        _log("Stopping server...")
     finally:
+        for httpd in started_servers:
+            httpd.shutdown()
+        for thread in threads:
+            thread.join(timeout=2)
+        for _, httpd in servers:
+            httpd.server_close()
         if AI_WORKER is not None:
             AI_WORKER.stop()
 

@@ -147,20 +147,27 @@
           <div class="ai-panel-head">
             <div>
               <h3>全局维护</h3>
-              <p class="panel-note">用于一次性整理整库数据。操作前建议先备份数据库。</p>
             </div>
             <div class="maintenance-actions">
-              <button class="primary-button small-inline" type="button" id="recomputeTonelessPinyinButton">
+              <button
+                class="primary-button small-inline has-tip"
+                type="button"
+                id="recomputeTonelessPinyinButton"
+                data-tip="扫描整库，只把不带声调的拼音用内置拼音重算覆盖。操作前建议先备份数据库。"
+              >
                 全部重算声调
               </button>
-              <button class="primary-button small-inline alt" type="button" id="capRejectedWeightsButton">
+              <button
+                class="primary-button small-inline alt has-tip"
+                type="button"
+                id="capRejectedWeightsButton"
+                data-tip="把所有人工拒绝词条的词频截断为 min(10, 原词频)。这是批量写库操作，建议先备份数据库。"
+              >
                 截断拒绝词频
               </button>
             </div>
           </div>
-          <p class="panel-note" id="maintenanceResult">
-            可重算无声调拼音，或把人工拒绝词条的词频统一截断为不超过 10。
-          </p>
+          <p class="panel-note" id="maintenanceResult" hidden></p>
         </section>
 
         <section class="bulk-panel">

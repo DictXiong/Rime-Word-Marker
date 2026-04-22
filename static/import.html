@@ -59,18 +59,34 @@
             <div class="field">
               <span>重复词条处理</span>
               <div class="checkbox-grid">
-                <label><input type="checkbox" id="importOverwritePinyin" /> 覆盖拼音</label>
-                <label><input type="checkbox" id="importIgnorePinyin" /> 忽略拼音</label>
-                <label><input type="checkbox" id="importOverwriteWeight" checked /> 更新词频</label>
-                <label><input type="checkbox" id="importMarkAccepted" /> 全部接受</label>
-                <label><input type="checkbox" id="importSkipNewEntries" /> 不新建词条</label>
+                <label
+                  class="has-tip"
+                  data-tip="重复词条仅在导入行提供拼音时覆盖原拼音；不能和“忽略拼音”同时启用。"
+                ><input type="checkbox" id="importOverwritePinyin" /> 覆盖拼音</label>
+                <label
+                  class="has-tip"
+                  data-tip="丢弃导入文件中的拼音。新词条会使用内置拼音生成；已有重复词条不会因此重算拼音。"
+                ><input type="checkbox" id="importIgnorePinyin" /> 忽略拼音</label>
+                <label
+                  class="has-tip"
+                  data-tip="重复词条仅在导入行提供词频时更新，并保留原词频和导入词频中的较大值。"
+                ><input type="checkbox" id="importOverwriteWeight" checked /> 更新词频</label>
+                <label
+                  class="has-tip"
+                  data-tip="把本次导入涉及的词条直接人工标注为接受，包括新词条和重复词条。"
+                ><input type="checkbox" id="importMarkAccepted" /> 全部接受</label>
+                <label
+                  class="has-tip"
+                  data-tip="导入文件中的新词条会被跳过，只按其它选项更新数据库中已有的重复词条。"
+                ><input type="checkbox" id="importSkipNewEntries" /> 不新建词条</label>
+                <label
+                  class="has-tip"
+                  data-tip="在写入导入结果前，把当前 SQLite 数据库备份为同目录的 .backup_时间戳 文件。"
+                ><input type="checkbox" id="importBackupBeforeImport" /> 导入前备份</label>
               </div>
             </div>
 
             <button class="primary-button" type="submit">导入词库</button>
-            <p class="form-note">
-              支持直接上传 Rime 风格词典文件，或手动粘贴内容。新词条缺失拼音会补全，缺失词频会设为 1；重复词条仅在导入行提供对应列且勾选对应选项时更新。“忽略拼音”会丢弃导入文件中的拼音并使用内置拼音生成，不能和“覆盖拼音”同时启用。勾选“更新词频”时会保留原词频和导入词频中的较大值；勾选“全部接受”会把本次导入涉及的词条直接标注为接受；勾选“不新建词条”后，新词条会被跳过，仅更新数据库中已有词条。
-            </p>
             <div class="message-box" id="importMessage"></div>
           </form>
         </article>
@@ -91,23 +107,41 @@
             <div class="field">
               <span>包含状态</span>
               <div class="checkbox-grid">
-                <label><input type="checkbox" name="exportStatus" value="accepted" checked /> 接受</label>
-                <label><input type="checkbox" name="exportStatus" value="pending" /> 待定</label>
-                <label><input type="checkbox" name="exportStatus" value="rejected" /> 拒绝</label>
+                <label
+                  class="has-tip"
+                  data-tip="导出人工状态为“接受”的词条。默认启用。"
+                ><input type="checkbox" name="exportStatus" value="accepted" checked /> 接受</label>
+                <label
+                  class="has-tip"
+                  data-tip="导出仍处于待定状态的词条；如果启用 AI 辅助，部分待定词条会按 AI 结果计入接受或拒绝。"
+                ><input type="checkbox" name="exportStatus" value="pending" /> 待定</label>
+                <label
+                  class="has-tip"
+                  data-tip="导出人工状态为“拒绝”的词条，通常仅用于检查或调试。"
+                ><input type="checkbox" name="exportStatus" value="rejected" /> 拒绝</label>
               </div>
             </div>
 
-            <label class="field inline">
+            <label
+              class="field inline has-tip"
+              data-tip="导出行会包含第三列词频：词条、拼音、词频。"
+            >
               <input type="checkbox" id="includeWeight" checked />
               <span>导出时包含词频</span>
             </label>
 
-            <label class="field inline">
+            <label
+              class="field inline has-tip"
+              data-tip="人工状态仍为待定、但 AI 标注为接受或拒绝的词条，会按 AI 结果参与导出。"
+            >
               <input type="checkbox" id="includeAiAssist" checked />
               <span>包含 AI 辅助</span>
             </label>
 
-            <label class="field inline">
+            <label
+              class="field inline has-tip"
+              data-tip="勾选后不输出 Rime YAML 文件头，导出文件第一行直接从词条开始。"
+            >
               <input type="checkbox" id="omitYamlHeader" />
               <span>不包含 YAML 文件头</span>
             </label>
@@ -115,11 +149,19 @@
             <div class="field">
               <span>中英混杂词汇</span>
               <div class="export-mixed-options">
-                <label class="field inline compact-inline">
+                <label
+                  class="field inline compact-inline has-tip"
+                  data-tip="中英混杂词汇必须单独导出为专用词典。勾选后只导出含英文词条；不勾选则排除含英文词条。"
+                >
                   <input type="checkbox" id="includeMixedWords" />
                   <span>导出中英混杂/全英文专用词典</span>
                 </label>
-                <select id="mixedPinyinScheme" disabled>
+                <select
+                  class="has-tip"
+                  id="mixedPinyinScheme"
+                  disabled
+                  data-tip="选择中英混杂词汇的编码方案。全拼会合并为一个整体；双拼会按所选方案转换。"
+                >
                   <option value="full_pinyin">全拼</option>
                   <option value="ziranma">自然码双拼</option>
                   <option value="abc">智能 ABC 双拼</option>
@@ -129,9 +171,6 @@
                   <option value="ziguang">紫光双拼</option>
                 </select>
               </div>
-              <p class="form-note small-note">
-                中英混杂词汇必须单独导出为专用词典。默认导出普通词条并排除含英文词条；勾选后只导出含英文词条，并把编码合并为一个整体，避免英文片段污染简拼。勾选“不包含 YAML 文件头”后，导出文件第一行会直接从词条开始。
-              </p>
             </div>
 
             <button class="primary-button alt" type="submit">导出为 Rime YAML</button>
