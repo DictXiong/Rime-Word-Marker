@@ -23,7 +23,7 @@ from app.pinyin_utils import (
 
 YAML_HEADER_PATTERN = re.compile(r"^[A-Za-z_][\w-]*\s*:")
 USERDB_METADATA_PATTERN = re.compile(r"(?:^|\s)[cdt]=")
-USERDB_WEIGHT_PATTERN = re.compile(r"(?:^|\s)c=(\d+)(?:\s|$)")
+USERDB_WEIGHT_PATTERN = re.compile(r"(?:^|\s)c=(-?\d+)(?:\s|$)")
 PINYIN_TONE_MARK_PATTERN = re.compile(r"[āáǎàēéěèīíǐìōóǒòūúǔùǖǘǚǜńňǹḿ]")
 EXPORT_DICTIONARY_NAME_UNSAFE_PATTERN = re.compile(r"[^A-Za-z0-9_.-]+")
 DEFAULT_DICTIONARY_NAME = "rime_word_marker_export"

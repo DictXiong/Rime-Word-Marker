@@ -58,6 +58,7 @@ class WordServiceTestCase(TestCase):
                 "#@/user_id\tltp0",
                 "bu \t不\tc=1 d=0.909373 t=35",
                 "bu lai \t不來\tc=12 d=0.882497 t=35",
+                "shan chu \t刪除\tc=-3 d=0.100000 t=35",
             ]
         )
 
@@ -67,14 +68,17 @@ class WordServiceTestCase(TestCase):
             for item in self.service.list_entries(page=1, page_size=10)["items"]
         }
 
-        self.assertEqual(result["parsed"], 2)
-        self.assertEqual(result["inserted"], 2)
+        self.assertEqual(result["parsed"], 3)
+        self.assertEqual(result["inserted"], 3)
         self.assertEqual(entries["不"]["pinyin"], "bu")
         self.assertEqual(entries["不"]["weight"], 1)
         self.assertTrue(entries["不"]["weight_defined"])
         self.assertEqual(entries["不來"]["pinyin"], "bu lai")
         self.assertEqual(entries["不來"]["weight"], 12)
         self.assertTrue(entries["不來"]["weight_defined"])
+        self.assertEqual(entries["刪除"]["pinyin"], "shan chu")
+        self.assertEqual(entries["刪除"]["weight"], -3)
+        self.assertTrue(entries["刪除"]["weight_defined"])
 
     def test_import_skips_userdb_lines_without_c_weight(self) -> None:
         result = self.service.import_text("bu \t不\td=0.909373 t=35")
@@ -951,12 +955,15 @@ class WordServiceTestCase(TestCase):
         self.assertEqual([item["phrase"] for item in none_page["items"]], ["丙"])
 
     def test_list_entries_can_filter_by_weight_range(self) -> None:
-        self.service.import_text("低频\tdi pin\t1\n中频\tzhong pin\t8\n高频\tgao pin\t20")
+        self.service.import_text("负频\tfu pin\t-5\n低频\tdi pin\t1\n中频\tzhong pin\t8\n高频\tgao pin\t20")
 
         page = self.service.list_entries(page=1, page_size=10, min_weight=2, max_weight=10)
+        negative_page = self.service.list_entries(page=1, page_size=10, min_weight=-10, max_weight=0)
 
         self.assertEqual(page["total"], 1)
         self.assertEqual(page["items"][0]["phrase"], "中频")
+        self.assertEqual(negative_page["total"], 1)
+        self.assertEqual(negative_page["items"][0]["phrase"], "负频")
 
     def test_list_entries_prioritizes_exact_phrase_match(self) -> None:
         self.service.import_text("目标\tmu biao\t1\n目标延伸\tmu biao yan shen\t1")
