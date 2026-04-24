@@ -87,6 +87,7 @@ class WordService:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     phrase TEXT NOT NULL UNIQUE,
                     pinyin TEXT NOT NULL,
+                    pinyin_locked INTEGER NOT NULL DEFAULT 0,
                     weight INTEGER NOT NULL DEFAULT 1,
                     weight_defined INTEGER NOT NULL DEFAULT 0,
                     status TEXT NOT NULL DEFAULT 'pending',
@@ -125,6 +126,11 @@ class WordService:
                     "ALTER TABLE entries ADD COLUMN weight_defined INTEGER NOT NULL DEFAULT 0"
                 )
                 entry_columns.add("weight_defined")
+            if "pinyin_locked" not in entry_columns:
+                connection.execute(
+                    "ALTER TABLE entries ADD COLUMN pinyin_locked INTEGER NOT NULL DEFAULT 0"
+                )
+                entry_columns.add("pinyin_locked")
             for column_name, column_type in (
                 ("ai_label", "TEXT"),
                 ("ai_score", "REAL"),
@@ -371,9 +377,13 @@ class WordService:
         updates: list[tuple[str, int]] = []
 
         with self._managed_connection() as connection:
-            rows = connection.execute("SELECT id, phrase, pinyin FROM entries").fetchall()
+            rows = connection.execute(
+                "SELECT id, phrase, pinyin, pinyin_locked FROM entries"
+            ).fetchall()
             for row in rows:
                 scanned += 1
+                if row["pinyin_locked"]:
+                    continue
                 current_pinyin = row["pinyin"] or ""
                 if self._pinyin_has_tone(current_pinyin):
                     continue
@@ -561,6 +571,7 @@ class WordService:
                         id,
                         phrase,
                         pinyin,
+                        pinyin_locked,
                         weight,
                         CASE
                             WHEN status IN ('accepted', 'rejected') THEN status
@@ -570,7 +581,7 @@ class WordService:
                         END AS effective_status
                     FROM entries
                 )
-                SELECT phrase, pinyin, weight
+                SELECT phrase, pinyin, pinyin_locked, weight
                 FROM export_view
                 WHERE effective_status IN ({placeholders})
                     AND (
@@ -592,7 +603,8 @@ class WordService:
                 if phrase_has_ascii_letters(phrase):
                     if not include_mixed:
                         continue
-                    pinyin = export_code_for_mixed_phrase(phrase, pinyin, mixed_scheme)
+                    if not row["pinyin_locked"]:
+                        pinyin = export_code_for_mixed_phrase(phrase, pinyin, mixed_scheme)
 
                 columns = [phrase, pinyin]
                 if include_weight:
@@ -1372,7 +1384,14 @@ class WordService:
         regenerate_pinyin: bool = False,
         clear_labeled_at: bool = False,
     ) -> dict[str, Any]:
-        allowed_keys = {"pinyin", "weight", "status", "imported_at", "labeled_at"}
+        allowed_keys = {
+            "pinyin",
+            "pinyin_locked",
+            "weight",
+            "status",
+            "imported_at",
+            "labeled_at",
+        }
         unexpected_keys = set(updates) - allowed_keys
         if unexpected_keys:
             raise ValueError(f"包含不支持的字段：{', '.join(sorted(unexpected_keys))}")
@@ -1434,6 +1453,9 @@ class WordService:
             if pinyin_provided:
                 manual_pinyin = str(updates["pinyin"]).strip()
 
+            pinyin_locked_provided = "pinyin_locked" in updates
+            next_pinyin_locked = self._coerce_bool(updates.get("pinyin_locked")) if pinyin_locked_provided else None
+
             for row in rows:
                 current = self._row_to_entry(row)
                 next_pinyin = current["pinyin"]
@@ -1457,15 +1479,20 @@ class WordService:
                 else:
                     next_labeled_at = current["labeled_at"]
 
+                next_locked = (
+                    next_pinyin_locked if pinyin_locked_provided else current["pinyin_locked"]
+                )
                 connection.execute(
                     """
                     UPDATE entries
-                    SET pinyin = ?, weight = ?, weight_defined = ?, status = ?, imported_at = ?, labeled_at = ?,
+                    SET pinyin = ?, pinyin_locked = ?, weight = ?, weight_defined = ?,
+                        status = ?, imported_at = ?, labeled_at = ?,
                         ai_label = ?, ai_score = ?, ai_labeled_at = ?, ai_model = ?, ai_prompt_version = ?
                     WHERE id = ?
                     """,
                     (
                         next_pinyin,
+                        1 if next_locked else 0,
                         next_weight,
                         1 if next_weight_defined else 0,
                         next_status,
@@ -1491,7 +1518,15 @@ class WordService:
         }
 
     def update_entry(self, entry_id: int, updates: dict[str, Any]) -> dict[str, Any]:
-        allowed_keys = {"phrase", "pinyin", "weight", "status", "imported_at", "labeled_at"}
+        allowed_keys = {
+            "phrase",
+            "pinyin",
+            "pinyin_locked",
+            "weight",
+            "status",
+            "imported_at",
+            "labeled_at",
+        }
         unexpected_keys = set(updates) - allowed_keys
         if unexpected_keys:
             raise ValueError(f"包含不支持的字段：{', '.join(sorted(unexpected_keys))}")
@@ -1529,6 +1564,13 @@ class WordService:
                 pinyin = transliterate_phrase(phrase)
             else:
                 pinyin = current["pinyin"]
+
+            if phrase_changed:
+                pinyin_locked = False
+            elif "pinyin_locked" in updates:
+                pinyin_locked = self._coerce_bool(updates.get("pinyin_locked"))
+            else:
+                pinyin_locked = current["pinyin_locked"]
 
             weight = current["weight"]
             weight_defined = current["weight_defined"]
@@ -1581,13 +1623,15 @@ class WordService:
             connection.execute(
                 """
                 UPDATE entries
-                SET phrase = ?, pinyin = ?, weight = ?, weight_defined = ?, status = ?, imported_at = ?, labeled_at = ?,
+                SET phrase = ?, pinyin = ?, pinyin_locked = ?, weight = ?, weight_defined = ?,
+                    status = ?, imported_at = ?, labeled_at = ?,
                     ai_label = ?, ai_score = ?, ai_labeled_at = ?, ai_model = ?, ai_prompt_version = ?
                 WHERE id = ?
                 """,
                 (
                     phrase,
                     pinyin,
+                    1 if pinyin_locked else 0,
                     weight,
                     1 if weight_defined else 0,
                     status,
@@ -1866,6 +1910,7 @@ class WordService:
             "pinyin": row["pinyin"],
             "weight": row["weight"],
             "weight_defined": bool(row["weight_defined"]) if "weight_defined" in row.keys() else False,
+            "pinyin_locked": bool(row["pinyin_locked"]) if "pinyin_locked" in row.keys() else False,
             "status": row["status"],
             "imported_at": row["imported_at"],
             "labeled_at": row["labeled_at"],
@@ -1875,6 +1920,16 @@ class WordService:
             "ai_model": row["ai_model"] if "ai_model" in row.keys() else None,
             "ai_prompt_version": row["ai_prompt_version"] if "ai_prompt_version" in row.keys() else None,
         }
+
+    @staticmethod
+    def _coerce_bool(raw_value: Any) -> bool:
+        if isinstance(raw_value, bool):
+            return raw_value
+        if isinstance(raw_value, (int, float)):
+            return bool(raw_value)
+        if isinstance(raw_value, str):
+            return raw_value.strip().lower() in {"1", "true", "yes", "y", "on"}
+        return False
 
     @staticmethod
     def _now() -> str:

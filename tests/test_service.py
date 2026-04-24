@@ -335,6 +335,7 @@ class WordServiceTestCase(TestCase):
 
         self.assertEqual(entry["weight"], 9)
         self.assertFalse(entry["weight_defined"])
+        self.assertFalse(entry["pinyin_locked"])
 
     def test_update_entry_without_weight_preserves_weight_defined(self) -> None:
         with mock.patch("app.service.transliterate_phrase", return_value="wei ding yi"):
@@ -365,6 +366,28 @@ class WordServiceTestCase(TestCase):
         self.assertEqual(entries["中国"]["pinyin"], "zhōng guó")
         self.assertEqual(entries["你好"]["pinyin"], "nǐ hǎo")
         transliterate.assert_called_once_with("中国")
+
+    def test_recompute_toneless_pinyin_skips_locked_entries(self) -> None:
+        self.service.import_text("锁定\tshuo ding\t1\n普通\tpu tong\t1")
+        entries = {
+            item["phrase"]: item
+            for item in self.service.list_entries(page=1, page_size=10)["items"]
+        }
+        self.service.update_entry(entries["锁定"]["id"], {"pinyin_locked": True})
+
+        with mock.patch("app.service.transliterate_phrase", return_value="pǔ tōng") as transliterate:
+            result = self.service.recompute_toneless_pinyin()
+
+        updated_entries = {
+            item["phrase"]: item
+            for item in self.service.list_entries(page=1, page_size=10)["items"]
+        }
+        self.assertEqual(result["scanned"], 2)
+        self.assertEqual(result["matched"], 1)
+        self.assertEqual(result["updated"], 1)
+        self.assertEqual(updated_entries["锁定"]["pinyin"], "shuo ding")
+        self.assertEqual(updated_entries["普通"]["pinyin"], "pǔ tōng")
+        transliterate.assert_called_once_with("普通")
 
     def test_cap_rejected_weights_only_caps_rejected_entries_above_limit(self) -> None:
         self.service.import_text("拒高\tjù gāo\t88\n拒低\tjù dī\t8\n收高\tshōu gāo\t99")
@@ -856,6 +879,21 @@ class WordServiceTestCase(TestCase):
 
         self.assertIn("来Q飞\tllqfz\t8", exported)
 
+    def test_export_mixed_entry_preserves_locked_pinyin(self) -> None:
+        self.service.import_text("来Q飞\tcustom-code\t8")
+        entry = self.service.list_entries(page=1, page_size=10)["items"][0]
+        self.service.update_entry(entry["id"], {"status": "accepted", "pinyin_locked": True})
+
+        exported = self.service.export_dictionary(
+            statuses=["accepted"],
+            include_weight=True,
+            include_mixed=True,
+            mixed_scheme="ziranma",
+        )
+
+        self.assertIn("来Q飞\tcustom-code\t8", exported)
+        self.assertNotIn("llqfz", exported)
+
     def test_export_shuangpin_schemes_keep_jqxy_standalone_u_as_u(self) -> None:
         self.service.import_text("T恤\tt xù\t8")
         entry = self.service.list_entries(page=1, page_size=10)["items"][0]
@@ -973,6 +1011,18 @@ class WordServiceTestCase(TestCase):
         self.assertEqual(updated["ai_model"], "demo-model")
         self.assertEqual(updated["ai_prompt_version"], "demo-v1")
 
+    def test_update_entry_can_toggle_pinyin_lock_and_phrase_change_unlocks_it(self) -> None:
+        self.service.import_text("测试\tce shi\t8")
+        entry = self.service.get_next_pending()
+
+        locked = self.service.update_entry(entry["id"], {"pinyin_locked": True})
+        self.assertTrue(locked["pinyin_locked"])
+
+        with mock.patch("app.service.transliterate_phrase", return_value="xīn cí"):
+            renamed = self.service.update_entry(entry["id"], {"phrase": "新词"})
+
+        self.assertFalse(renamed["pinyin_locked"])
+
     def test_batch_update_entries_preserves_ai_annotation_when_weight_input_changes(self) -> None:
         self.service.import_text("测试\tce shi\t8")
         entry = self.service.get_next_pending()
@@ -993,6 +1043,17 @@ class WordServiceTestCase(TestCase):
         self.assertEqual(updated["ai_score"], 0.94)
         self.assertEqual(updated["ai_model"], "demo-model")
         self.assertEqual(updated["ai_prompt_version"], "demo-v1")
+
+    def test_batch_update_entries_can_toggle_pinyin_lock(self) -> None:
+        self.service.import_text("甲\tjia\t1\n乙\tyi\t1")
+        entries = self.service.list_entries(page=1, page_size=10)["items"]
+        ids = [entry["id"] for entry in entries]
+
+        locked = self.service.batch_update_entries(ids, {"pinyin_locked": True})["entries"]
+        self.assertTrue(all(entry["pinyin_locked"] for entry in locked))
+
+        unlocked = self.service.batch_update_entries(ids, {"pinyin_locked": False})["entries"]
+        self.assertTrue(all(not entry["pinyin_locked"] for entry in unlocked))
 
     def test_set_ai_enabled_requires_sufficient_human_labels(self) -> None:
         with mock.patch("app.service.transliterate_phrase", side_effect=["jiǎ", "yǐ"]):

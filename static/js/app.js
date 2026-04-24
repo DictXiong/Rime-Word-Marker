@@ -112,9 +112,6 @@ document.addEventListener("DOMContentLoaded", async () => {
 });
 
 function initTooltips() {
-  const triggers = [...document.querySelectorAll(".has-tip[data-tip]")];
-  if (!triggers.length) return;
-
   document.body.classList.add("js-tooltips");
   const tooltip = document.createElement("div");
   tooltip.className = "floating-tooltip";
@@ -139,11 +136,30 @@ function initTooltips() {
     tooltip.hidden = true;
   };
 
-  triggers.forEach((trigger) => {
-    trigger.addEventListener("mouseenter", () => show(trigger));
-    trigger.addEventListener("mouseleave", () => hide(trigger));
-    trigger.addEventListener("focusin", () => show(trigger));
-    trigger.addEventListener("focusout", () => hide(trigger));
+  document.addEventListener("mouseover", (event) => {
+    const trigger = event.target.closest(".has-tip[data-tip], [data-tip]");
+    if (!trigger || !document.body.contains(trigger) || trigger === activeTrigger) return;
+    show(trigger);
+  });
+
+  document.addEventListener("mouseout", (event) => {
+    const trigger = event.target.closest(".has-tip[data-tip], [data-tip]");
+    if (!trigger || trigger.contains(event.relatedTarget)) return;
+    hide(trigger);
+  });
+
+  document.addEventListener("focusin", (event) => {
+    const trigger = event.target.closest(".has-tip[data-tip], [data-tip]");
+    if (trigger) {
+      show(trigger);
+    }
+  });
+
+  document.addEventListener("focusout", (event) => {
+    const trigger = event.target.closest(".has-tip[data-tip], [data-tip]");
+    if (trigger) {
+      hide(trigger);
+    }
   });
 
   ["scroll", "resize"].forEach((eventName) => {
@@ -265,6 +281,8 @@ function cacheElements() {
   els.bulkAcceptButton = document.getElementById("bulkAcceptButton");
   els.bulkPendingButton = document.getElementById("bulkPendingButton");
   els.bulkRejectButton = document.getElementById("bulkRejectButton");
+  els.bulkLockPinyinButton = document.getElementById("bulkLockPinyinButton");
+  els.bulkUnlockPinyinButton = document.getElementById("bulkUnlockPinyinButton");
   els.openBulkEditButton = document.getElementById("openBulkEditButton");
   els.aiEnabledToggle = document.getElementById("aiEnabledToggle");
   els.aiPanelNote = document.getElementById("aiPanelNote");
@@ -564,6 +582,12 @@ function bindEvents() {
     els.bulkRejectButton.addEventListener("click", async () => {
       await applyBulkStatus("rejected");
     });
+    els.bulkLockPinyinButton?.addEventListener("click", async () => {
+      await applyBulkPinyinLock(true);
+    });
+    els.bulkUnlockPinyinButton?.addEventListener("click", async () => {
+      await applyBulkPinyinLock(false);
+    });
     els.openBulkEditButton.addEventListener("click", openBulkEditDialog);
     els.aiEnabledToggle?.addEventListener("change", async () => {
       await toggleAiEnabled(els.aiEnabledToggle.checked);
@@ -579,6 +603,12 @@ function bindEvents() {
       const editButton = event.target.closest("[data-edit-entry-id]");
       if (editButton) {
         await openEditDialog(Number(editButton.dataset.editEntryId));
+        return;
+      }
+
+      const pinyinLockButton = event.target.closest("[data-toggle-pinyin-lock-id]");
+      if (pinyinLockButton) {
+        await toggleEntryPinyinLock(Number(pinyinLockButton.dataset.togglePinyinLockId));
         return;
       }
 
@@ -1452,7 +1482,10 @@ function renderEntryRow(entry) {
         <div class="table-phrase">${escapeHtml(entry.phrase)}</div>
       </td>
       <td class="col-pinyin">
-        <div class="table-pinyin">${escapeHtml(entry.pinyin)}</div>
+        <div class="table-pinyin-cell">
+          ${renderPinyinLockButton(entry)}
+          <div class="table-pinyin">${escapeHtml(entry.pinyin)}</div>
+        </div>
       </td>
       <td class="col-weight">${formatManageWeight(entry)}</td>
       <td class="col-status">
@@ -1472,6 +1505,21 @@ function renderEntryRow(entry) {
         </div>
       </td>
     </tr>
+  `;
+}
+
+function renderPinyinLockButton(entry) {
+  const locked = !!entry.pinyin_locked;
+  const icon = locked ? "🔒" : "🔓";
+  const label = locked ? "拼音已锁定，点击解锁" : "拼音未锁定，点击锁定";
+  return `
+    <button
+      class="pinyin-lock-button has-tip ${locked ? "is-locked" : ""}"
+      type="button"
+      data-toggle-pinyin-lock-id="${entry.id}"
+      aria-label="${label}"
+      data-tip="${label}"
+    >${icon}</button>
   `;
 }
 
@@ -1544,6 +1592,41 @@ async function applyBulkStatus(status) {
       updates: { status },
     });
     applyBulkResponse(payload, `已批量标记为${STATUS_LABELS[status]}。`);
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+async function applyBulkPinyinLock(locked) {
+  const ids = getSelectedIds();
+  if (!ids.length) {
+    showToast("请先选择要处理的词条。", true);
+    return;
+  }
+
+  try {
+    const payload = await postJSON("/api/entries/bulk-update", {
+      ids,
+      updates: { pinyin_locked: locked },
+    });
+    applyBulkResponse(payload, locked ? "已锁定所选词条拼音。" : "已解锁所选词条拼音。");
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+async function toggleEntryPinyinLock(entryId) {
+  const entry = state.manage.currentItems.find((item) => item.id === entryId);
+  if (!entry) return;
+
+  const nextLocked = !entry.pinyin_locked;
+  try {
+    const payload = await postJSON(`/api/entries/${entryId}/update`, {
+      pinyin_locked: nextLocked,
+    });
+    syncEntryAcrossViews(payload.entry);
+    await loadManageEntries();
+    showToast(nextLocked ? "拼音已锁定。" : "拼音已解锁。");
   } catch (error) {
     showToast(error.message, true);
   }
@@ -1725,6 +1808,10 @@ async function saveEditForm() {
     payload.labeled_at = "";
   }
 
+  const originalEntry = state.edit.originalEntry;
+  const unlocksPinyin =
+    !!originalEntry?.pinyin_locked && payload.phrase !== String(originalEntry.phrase || "").trim();
+
   try {
     const response = await postJSON(`/api/entries/${entryId}/update`, payload);
     syncEntryAcrossViews(response.entry);
@@ -1732,7 +1819,11 @@ async function saveEditForm() {
     void loadAiOverview(false);
     await loadManageEntries();
     closeEditDialog();
-    showToast("词条信息已更新。");
+    showToast(
+      unlocksPinyin
+        ? "词条信息已更新；因词条内容变化，拼音锁定已自动解除。"
+        : "词条信息已更新。",
+    );
   } catch (error) {
     showToast(error.message, true);
   }

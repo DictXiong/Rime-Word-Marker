@@ -994,8 +994,8 @@ textarea {
 .bulk-actions .ghost-button,
 .bulk-actions .primary-button,
 .bulk-actions .decision-button {
-  min-height: 56px;
-  padding: 12px 18px;
+  min-height: 46px;
+  padding: 10px 14px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1393,7 +1393,7 @@ input[type="radio"] {
 }
 
 .col-pinyin {
-  width: 6em;
+  width: 6.8em;
 }
 
 .col-weight {
@@ -1437,6 +1437,32 @@ input[type="radio"] {
   white-space: normal;
   overflow-wrap: anywhere;
   line-height: 1.35;
+}
+
+.table-pinyin-cell {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+}
+
+.pinyin-lock-button {
+  flex: 0 0 auto;
+  width: 1.6rem;
+  height: 1.6rem;
+  padding: 0;
+  border: 1px solid rgba(29, 29, 29, 0.1);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.78);
+  cursor: pointer;
+  font-size: 0.88rem;
+  line-height: 1;
+  box-shadow: 0 8px 18px rgba(20, 35, 38, 0.08);
+}
+
+.pinyin-lock-button.is-locked {
+  background: rgba(24, 80, 86, 0.12);
+  border-color: rgba(24, 80, 86, 0.28);
 }
 
 .table-actions {

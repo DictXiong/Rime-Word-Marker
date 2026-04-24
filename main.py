@@ -524,6 +524,7 @@ def _compact_entry(entry) -> dict | None:
         "phrase": entry.get("phrase"),
         "status": entry.get("status"),
         "pinyin": entry.get("pinyin"),
+        "pinyin_locked": entry.get("pinyin_locked"),
         "ai_label": entry.get("ai_label"),
         "ai_score": entry.get("ai_score"),
         "ai_prompt_version": entry.get("ai_prompt_version"),
