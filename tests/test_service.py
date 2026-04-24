@@ -1189,26 +1189,44 @@ class WordServiceTestCase(TestCase):
             limit=10,
             prompt_version="old-rules",
         )
-        new_batch = self.service.get_ai_batch_candidates(
+        default_new_batch = self.service.get_ai_batch_candidates(
             limit=10,
             prompt_version="new-rules",
         )
         overview = self.service.get_ai_overview(prompt_version="new-rules")
 
         self.assertEqual(old_batch["items"], [])
-        self.assertEqual([item["phrase"] for item in new_batch["items"]], ["甲", "乙"])
+        self.assertEqual(default_new_batch["items"], [])
         self.assertEqual(overview["queue"]["unlabeled"], 0)
         self.assertEqual(overview["queue"]["outdated"], 2)
         self.assertEqual(overview["queue"]["remaining"], 2)
         self.assertEqual(overview["queue"]["current"], 0)
+        self.assertFalse(overview["queue"]["reprocess_outdated"])
+
+        reprocess_overview = self.service.request_ai_outdated_reprocess(
+            prompt_version="new-rules",
+        )
+        new_batch = self.service.get_ai_batch_candidates(
+            limit=10,
+            prompt_version="new-rules",
+            include_outdated=True,
+        )
+
+        self.assertTrue(reprocess_overview["queue"]["reprocess_outdated"])
+        self.assertEqual([item["phrase"] for item in new_batch["items"]], ["甲", "乙"])
 
         self.service.update_status(entries["甲"]["id"], "accepted")
         pending_only_batch = self.service.get_ai_batch_candidates(
             limit=10,
             prompt_version="new-rules",
+            include_outdated=True,
         )
 
         self.assertEqual([item["phrase"] for item in pending_only_batch["items"]], ["乙"])
+
+        self.service.clear_ai_outdated_reprocess()
+        cleared_overview = self.service.get_ai_overview(prompt_version="new-rules")
+        self.assertFalse(cleared_overview["queue"]["reprocess_outdated"])
 
     def test_ai_overview_reports_progress_speed_and_eta(self) -> None:
         with mock.patch("app.service.transliterate_phrase", side_effect=["jiǎ", "yǐ", "bǐng"]):
@@ -1288,6 +1306,7 @@ class WordServiceTestCase(TestCase):
         batch = self.service.get_ai_batch_candidates(
             limit=3,
             prompt_version="new-rules",
+            include_outdated=True,
         )
 
         self.assertEqual([item["phrase"] for item in batch["items"]], ["丙", "丁", "甲"])
@@ -1317,6 +1336,7 @@ class WordServiceTestCase(TestCase):
                 limit=2,
                 prompt_version="new-rules",
                 selection_mode="random",
+                include_outdated=True,
             )
 
         self.assertEqual([item["phrase"] for item in batch["items"]], ["丙", "丁"])

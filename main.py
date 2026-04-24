@@ -320,6 +320,19 @@ class AppHandler(SimpleHTTPRequestHandler):
                 self._send_json(200, {"result": result, "stats": _service().get_stats()})
                 return
 
+            if parsed.path == "/api/maintenance/reprocess-outdated-ai":
+                overview_context = _ai_overview_context()
+                overview = _service().request_ai_outdated_reprocess(
+                    configured=overview_context.get("configured", False),
+                    model_name=overview_context.get("model_name"),
+                    prompt_version=overview_context.get("prompt_version"),
+                )
+                if _ai_worker():
+                    _ai_worker().wake()
+                _verbose_log_json("maintenance-reprocess-outdated-ai", {"overview": overview})
+                self._send_json(200, {"overview": overview, "stats": _service().get_stats()})
+                return
+
             if parsed.path == "/api/review/next":
                 review_state = _service().advance_review(
                     self._review_session_key(),

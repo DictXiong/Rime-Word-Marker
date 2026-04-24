@@ -299,6 +299,7 @@ function cacheElements() {
   els.aiLastError = document.getElementById("aiLastError");
   els.recomputeTonelessPinyinButton = document.getElementById("recomputeTonelessPinyinButton");
   els.capRejectedWeightsButton = document.getElementById("capRejectedWeightsButton");
+  els.reprocessOutdatedAiButton = document.getElementById("reprocessOutdatedAiButton");
   els.maintenanceResult = document.getElementById("maintenanceResult");
 
   els.entryEditDialog = document.getElementById("entryEditDialog");
@@ -598,6 +599,9 @@ function bindEvents() {
     els.capRejectedWeightsButton?.addEventListener("click", async () => {
       await capRejectedWeights();
     });
+    els.reprocessOutdatedAiButton?.addEventListener("click", async () => {
+      await reprocessOutdatedAi();
+    });
 
     els.entryList.addEventListener("click", async (event) => {
       const editButton = event.target.closest("[data-edit-entry-id]");
@@ -774,16 +778,21 @@ function applyAiOverview(overview) {
   els.aiEnabledToggle.disabled = !overview.configured && !overview.enabled;
   els.aiTrainingSummary.textContent =
     `接受 ${overview.training.accepted} / 拒绝 ${overview.training.rejected}`;
-  const outdatedText = overview.queue.outdated ? `，旧规则 ${overview.queue.outdated}` : "";
+  const outdatedText = overview.queue.outdated ? `，旧 prompt ${overview.queue.outdated}` : "";
+  const pendingQueueText = overview.queue.reprocess_outdated
+    ? `待跑 ${overview.queue.remaining ?? overview.queue.unlabeled}`
+    : `待标注 ${overview.queue.unlabeled}`;
   els.aiQueueSummary.textContent =
-    `待跑 ${overview.queue.remaining ?? overview.queue.unlabeled}${outdatedText}，待定 ${overview.queue.ai_pending}，接受 ${overview.queue.ai_accepted}，拒绝 ${overview.queue.ai_rejected}`;
+    `${pendingQueueText}${outdatedText}，待定 ${overview.queue.ai_pending}，接受 ${overview.queue.ai_accepted}，拒绝 ${overview.queue.ai_rejected}`;
   els.aiWorkerStatus.textContent = AI_WORKER_LABELS[overview.worker_status] || overview.worker_status;
   els.aiModelSummary.textContent = overview.configured
     ? `${overview.model || "已配置"} · prompt ${overview.prompt_version || "-"}`
     : "未配置";
   renderAiProgress(overview);
   if (overview.enabled) {
-    els.aiPanelNote.textContent = "后台会持续为人工待定、尚未 AI 标注或 AI 规则已过期的词条生成辅助建议。";
+    els.aiPanelNote.textContent = overview.queue.reprocess_outdated
+      ? "后台会持续为未 AI 标注和旧 prompt 待更新的待定词条生成辅助建议。"
+      : "后台会持续为尚未 AI 标注的待定词条生成辅助建议；旧 prompt 词条需在全局维护中手动触发重算。";
   } else if (!overview.configured) {
     els.aiPanelNote.textContent = "请先在配置文件里补全 AI endpoint、model 等参数。";
   } else {
@@ -928,6 +937,42 @@ async function capRejectedWeights() {
     showMaintenanceResult(summary);
     await refreshStats(payload.stats);
     await loadManageEntries();
+    showToast(summary);
+  } catch (error) {
+    showMaintenanceResult(error.message);
+    showToast(error.message, true);
+  } finally {
+    button.disabled = false;
+    button.textContent = previousText;
+  }
+}
+
+async function reprocessOutdatedAi() {
+  if (!els.reprocessOutdatedAiButton) return;
+  const outdated = Number(state.ai.overview?.queue?.outdated || 0);
+  if (outdated <= 0) {
+    showMaintenanceResult("当前没有旧 prompt 版本的 AI 标注需要重算。");
+    showToast("当前没有旧 prompt 版本的 AI 标注需要重算。");
+    return;
+  }
+
+  const confirmed = window.confirm(
+    `将允许后台 AI 重新处理 ${outdated} 条旧 prompt 版本的待定词条。是否继续？`,
+  );
+  if (!confirmed) return;
+
+  const button = els.reprocessOutdatedAiButton;
+  const previousText = button.textContent;
+  button.disabled = true;
+  button.textContent = "已加入...";
+  showMaintenanceResult("已允许后台 AI 处理旧 prompt 版本词条，请保持自动 AI 标注开启。");
+
+  try {
+    const payload = await postJSON("/api/maintenance/reprocess-outdated-ai", {});
+    applyAiOverview(payload.overview);
+    const count = Number(payload.overview?.queue?.outdated || outdated);
+    const summary = `已加入 AI 过时重算队列：${count} 条。`;
+    showMaintenanceResult(summary);
     showToast(summary);
   } catch (error) {
     showMaintenanceResult(error.message);

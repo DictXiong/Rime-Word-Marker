@@ -43,6 +43,7 @@ AI_SETTING_LAST_SCAN_ID = "ai_last_scan_id"
 AI_SETTING_LAST_ERROR = "ai_last_error"
 AI_SETTING_LAST_RUN_AT = "ai_last_run_at"
 AI_SETTING_PROGRESS_SAMPLES = "ai_progress_samples"
+AI_SETTING_REPROCESS_OUTDATED = "ai_reprocess_outdated"
 AI_PROGRESS_SAMPLE_WINDOW_SECONDS = 600
 AI_WORKER_DISABLED = "disabled"
 AI_WORKER_IDLE = "idle"
@@ -161,6 +162,7 @@ class WordService:
             self._ensure_setting(connection, AI_SETTING_LAST_ERROR, "")
             self._ensure_setting(connection, AI_SETTING_LAST_RUN_AT, "")
             self._ensure_setting(connection, AI_SETTING_PROGRESS_SAMPLES, "[]")
+            self._ensure_setting(connection, AI_SETTING_REPROCESS_OUTDATED, "0")
             connection.commit()
 
     def import_text(
@@ -669,6 +671,7 @@ class WordService:
                     AI_SETTING_LAST_ERROR,
                     AI_SETTING_LAST_RUN_AT,
                     AI_SETTING_PROGRESS_SAMPLES,
+                    AI_SETTING_REPROCESS_OUTDATED,
                 ],
             )
             training_row = connection.execute(
@@ -745,6 +748,7 @@ class WordService:
         worker_status = settings.get(AI_SETTING_WORKER_STATUS, AI_WORKER_DISABLED)
         if worker_status not in VALID_AI_WORKER_STATUSES:
             worker_status = AI_WORKER_DISABLED
+        reprocess_outdated = settings.get(AI_SETTING_REPROCESS_OUTDATED, "0") == "1"
 
         return {
             "enabled": settings.get(AI_SETTING_ENABLED, "0") == "1",
@@ -768,6 +772,7 @@ class WordService:
                 "ai_pending": int(ai_row["ai_pending_total"] or 0),
                 "ai_accepted": int(ai_row["ai_accepted_total"] or 0),
                 "ai_rejected": int(ai_row["ai_rejected_total"] or 0),
+                "reprocess_outdated": reprocess_outdated,
             },
             "progress": progress,
             "worker_status": worker_status,
@@ -934,6 +939,28 @@ class WordService:
             connection.commit()
         return self.get_ai_overview()
 
+    def request_ai_outdated_reprocess(
+        self,
+        configured: bool = False,
+        model_name: str | None = None,
+        prompt_version: str | None = None,
+    ) -> dict[str, Any]:
+        with self._managed_connection() as connection:
+            self._set_setting(connection, AI_SETTING_REPROCESS_OUTDATED, "1")
+            self._set_setting(connection, AI_SETTING_LAST_SCAN_ID, "0")
+            self._set_setting(connection, AI_SETTING_LAST_RUN_AT, self._now())
+            connection.commit()
+        return self.get_ai_overview(
+            configured=configured,
+            model_name=model_name,
+            prompt_version=prompt_version,
+        )
+
+    def clear_ai_outdated_reprocess(self) -> None:
+        with self._managed_connection() as connection:
+            self._set_setting(connection, AI_SETTING_REPROCESS_OUTDATED, "0")
+            connection.commit()
+
     def update_ai_runtime_state(
         self,
         worker_status: str,
@@ -1012,6 +1039,7 @@ class WordService:
         limit: int = 12,
         prompt_version: str | None = None,
         selection_mode: str = "sequential",
+        include_outdated: bool = False,
     ) -> dict[str, Any]:
         limit = max(1, min(int(limit), MAX_AI_BATCH_SIZE))
         current_prompt_version = (prompt_version or "").strip()
@@ -1019,7 +1047,7 @@ class WordService:
         primary_parameters: list[Any] = [PENDING]
         fallback_condition = ""
         fallback_parameters: list[Any] = []
-        if current_prompt_version:
+        if include_outdated and current_prompt_version:
             fallback_condition = (
                 "status = ? AND ai_label IS NOT NULL "
                 "AND (ai_prompt_version IS NULL OR ai_prompt_version != ?)"

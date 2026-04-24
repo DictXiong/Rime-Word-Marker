@@ -254,6 +254,7 @@ class AIAnnotationWorkerTestCase(TestCase):
             "enabled": True,
             "worker_status": "idle",
             "training": {"sufficient": True},
+            "queue": {"reprocess_outdated": False},
         }
         service.get_ai_batch_candidates.return_value = {
             "items": [{"id": 1, "phrase": "程序员"}, {"id": 2, "phrase": "喝"}],
@@ -278,6 +279,7 @@ class AIAnnotationWorkerTestCase(TestCase):
             limit=24,
             prompt_version=DEFAULT_AI_PROMPT_VERSION,
             selection_mode="random",
+            include_outdated=False,
         )
         print_mock.assert_called_once()
         printed_message = print_mock.call_args.args[0]
@@ -292,6 +294,7 @@ class AIAnnotationWorkerTestCase(TestCase):
             "enabled": True,
             "worker_status": "idle",
             "training": {"sufficient": True},
+            "queue": {"reprocess_outdated": False},
         }
         service.get_ai_batch_candidates.return_value = {
             "items": [{"id": 1, "phrase": "程序员"}, {"id": 2, "phrase": "喝"}],
@@ -334,6 +337,7 @@ class AIAnnotationWorkerTestCase(TestCase):
             "enabled": True,
             "worker_status": "idle",
             "training": {"sufficient": True},
+            "queue": {"reprocess_outdated": False},
         }
         service.get_ai_batch_candidates.return_value = {
             "items": [{"id": 1, "phrase": "程序员"}, {"id": 2, "phrase": "词库"}],

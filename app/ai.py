@@ -405,8 +405,11 @@ class AIAnnotationWorker:
             limit=self.config.batch_size,
             prompt_version=self.config.prompt_version,
             selection_mode=self.config.candidate_mode,
+            include_outdated=overview["queue"].get("reprocess_outdated", False),
         )
         if not batch["items"]:
+            if overview["queue"].get("reprocess_outdated") and not overview["queue"].get("outdated"):
+                self.service.clear_ai_outdated_reprocess()
             self.service.update_ai_runtime_state("idle", last_error="")
             return False
 
