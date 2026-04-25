@@ -2,6 +2,10 @@
   "host": ["127.0.0.1"],
   "port": 8000,
   "db_path": "./data/words.db",
+  "allowed_hosts": [],
+  "access_token": "",
+  "access_token_file": "",
+  "max_request_body_mb": 512,
   "verbose": false,
   "ai": {
     "endpoint": "http://127.0.0.1:11434/v1",

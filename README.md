@@ -101,6 +101,10 @@ http://127.0.0.1:8000
   "host": ["127.0.0.1"],
   "port": 8000,
   "db_path": "./data/words.db",
+  "allowed_hosts": [],
+  "access_token": "",
+  "access_token_file": "",
+  "max_request_body_mb": 512,
   "verbose": false,
   "ai": {
     "endpoint": "http://127.0.0.1:11434/v1",
@@ -120,6 +124,14 @@ http://127.0.0.1:8000
 
 `host` 可以写成单个字符串或字符串数组；也支持使用 `hosts` 字段表达多个监听地址。例如同时监听 IPv4 / IPv6：`"host": ["0.0.0.0", "::"]`。
 
+`allowed_hosts` 为空数组时不检查 `Host` 请求头；如果通过 Nginx 反向代理公开访问，建议填入实际域名和本机回源地址，例如 `["rime.example.test", "127.0.0.1"]`。
+
+`access_token` 为空字符串时不启用应用层访问控制；设置为高强度随机字符串后，除首页、静态资源、`/api/health`、`/api/stats`、`/api/export` 外，其它页面和 API 都需要授权。首次访问受保护页面时在 URL 后添加 `?token=你的token`，服务端会写入长期 HttpOnly Cookie 并自动跳转去掉 URL 中的 token，之后同一浏览器无需再次输入。
+
+也可以用 `access_token_file` 从文件读取 token，路径相对于配置文件所在目录解析；如果同时设置 `access_token_file` 和 `access_token`，优先使用文件内容。token 文件末尾可以带换行，程序会自动去除首尾空白；如果指定的 token 文件不存在、不可读或内容为空，服务会拒绝启动。
+
+`max_request_body_mb` 是后端请求体大小上限，主要用于导入大词库时保护后端；Nginx 的 `client_max_body_size` 应不小于该值。
+
 使用方式：
 
 ```bash
@@ -132,6 +144,47 @@ cp config.example.json config.json
 1. 命令行参数
 2. 配置文件
 3. 内置默认值
+
+## Nginx 反向代理
+
+建议后端只监听本机地址，由 Nginx 对外提供 HTTPS：
+
+```json
+{
+  "host": ["127.0.0.1"],
+  "port": 8000,
+  "db_path": "/var/lib/rime-word-marker/words.db",
+  "allowed_hosts": ["rime.example.test", "127.0.0.1"],
+  "access_token_file": "/run/secrets/rime-word-marker-token",
+  "max_request_body_mb": 512
+}
+```
+
+示例 Nginx 配置：
+
+```nginx
+server {
+    listen 80;
+    server_name rime.example.test;
+
+    client_max_body_size 512m;
+
+    location / {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+}
+```
+
+如果不是纯内网使用，建议在 Nginx 层启用 HTTPS。应用内置的 `access_token` 是轻量访问控制，适合个人内网或反代后的简单保护；如果要暴露到公网，仍建议叠加 Nginx Basic Auth、IP 白名单或 SSO。
+
+首次授权需要在 URL 中携带 `?token=...`。应用会立即写入 Cookie 并跳转去掉 token，但反向代理的访问日志仍可能记录首次请求的完整 query string。若 token 需要严格保密，建议调整 Nginx `log_format`，避免记录 `$request_uri` 中的查询参数，或在首次授权后轮换 token。
 
 ## 数据说明
 

@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import argparse
+import hmac
 import json
 import re
 import socket
 import threading
+from http.cookies import CookieError, SimpleCookie
 from datetime import datetime
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, parse_qsl, unquote, urlencode, urlparse, urlunparse
 
 from app.ai import (
     AIAnnotationWorker,
@@ -32,14 +34,34 @@ STATIC_DIR = BASE_DIR / "static"
 DATA_DIR = BASE_DIR / "data"
 DEFAULT_DB_PATH = DATA_DIR / "words.db"
 DEFAULT_CONFIG_PATH = BASE_DIR / "config.json"
+DEFAULT_MAX_REQUEST_BODY_BYTES = 512 * 1024 * 1024
+ACCESS_TOKEN_COOKIE_NAME = "rime_word_marker_access"
+ACCESS_TOKEN_QUERY_KEYS = {"token", "access_token"}
+ACCESS_TOKEN_COOKIE_MAX_AGE = 10 * 365 * 24 * 60 * 60
 SERVICE: WordService | None = None
 AI_WORKER: AIAnnotationWorker | None = None
 VERBOSE = False
+ALLOWED_HOSTS: list[str] = []
+MAX_REQUEST_BODY_BYTES = DEFAULT_MAX_REQUEST_BODY_BYTES
+ACCESS_TOKEN = ""
 PAGE_ROUTES = {
     "/": "/index.html",
     "/review": "/review.html",
     "/import": "/import.html",
     "/manage": "/manage.html",
+}
+PUBLIC_STATIC_PREFIXES = ("/css/", "/js/", "/icons/")
+PUBLIC_STATIC_PATHS = {
+    "/",
+    "/index.html",
+    "/favicon.ico",
+    "/manifest.webmanifest",
+    "/apple-touch-icon.png",
+}
+PUBLIC_API_PATHS = {
+    "/api/export",
+    "/api/health",
+    "/api/stats",
 }
 
 ENTRY_DETAIL_RE = re.compile(r"^/api/entries/(\d+)$")
@@ -48,6 +70,10 @@ ENTRY_UPDATE_RE = re.compile(r"^/api/entries/(\d+)/update$")
 ENTRY_DELETE_RE = re.compile(r"^/api/entries/(\d+)/delete$")
 SESSION_KEY_RE = re.compile(r"^[A-Za-z0-9._-]{1,120}$")
 CLIENT_DISCONNECT_ERRORS = (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)
+
+
+class RequestEntityTooLarge(ValueError):
+    pass
 
 
 class ThreadingHTTPServerV6(ThreadingHTTPServer):
@@ -64,7 +90,13 @@ class AppHandler(SimpleHTTPRequestHandler):
         super().__init__(*args, directory=directory or str(STATIC_DIR), **kwargs)
 
     def do_GET(self) -> None:
+        if not self._validate_host_header():
+            return
         parsed = urlparse(self.path)
+        if self._redirect_valid_access_token(parsed):
+            return
+        if not self._authorize_request(parsed):
+            return
         if parsed.path.startswith("/api/"):
             self._handle_api_get(parsed)
             return
@@ -75,7 +107,11 @@ class AppHandler(SimpleHTTPRequestHandler):
         super().do_GET()
 
     def do_POST(self) -> None:
+        if not self._validate_host_header():
+            return
         parsed = urlparse(self.path)
+        if not self._authorize_request(parsed):
+            return
         if not parsed.path.startswith("/api/"):
             self._send_json(404, {"error": "未找到接口。"})
             return
@@ -466,6 +502,8 @@ class AppHandler(SimpleHTTPRequestHandler):
             self._send_json(404, {"error": "未找到接口。"})
         except json.JSONDecodeError:
             self._send_json(400, {"error": "请求体不是合法 JSON。"})
+        except RequestEntityTooLarge as exc:
+            self._send_json(413, {"error": str(exc)})
         except LookupError as exc:
             self._send_json(404, {"error": str(exc)})
         except ValueError as exc:
@@ -477,15 +515,130 @@ class AppHandler(SimpleHTTPRequestHandler):
             self._send_json(500, {"error": f"服务器异常：{exc}"})
 
     def _read_json_body(self) -> dict:
-        content_length = int(self.headers.get("Content-Length", "0"))
+        content_length = self._content_length()
         raw_body = self.rfile.read(content_length) if content_length else b"{}"
         if not raw_body:
             return {}
         return json.loads(raw_body.decode("utf-8"))
 
     def _read_raw_body(self) -> bytes:
-        content_length = int(self.headers.get("Content-Length", "0"))
+        content_length = self._content_length()
         return self.rfile.read(content_length) if content_length else b""
+
+    def _content_length(self) -> int:
+        try:
+            content_length = int(self.headers.get("Content-Length", "0"))
+        except ValueError as exc:
+            raise ValueError("Content-Length 不合法。") from exc
+        if content_length > MAX_REQUEST_BODY_BYTES:
+            limit_mb = MAX_REQUEST_BODY_BYTES / 1024 / 1024
+            raise RequestEntityTooLarge(f"请求体过大，后端限制为 {limit_mb:.0f} MiB。")
+        return content_length
+
+    def _validate_host_header(self) -> bool:
+        if not ALLOWED_HOSTS:
+            return True
+        host = _normalize_host_header(self.headers.get("Host", ""))
+        if _host_allowed(host, ALLOWED_HOSTS):
+            return True
+        self._send_json(421, {"error": "Host 不在允许列表中。"})
+        return False
+
+    def _redirect_valid_access_token(self, parsed) -> bool:
+        if not ACCESS_TOKEN or parsed.path == "/api/export":
+            return False
+        token = _query_access_token(parsed.query)
+        if not token or not _access_token_matches(token, ACCESS_TOKEN):
+            return False
+        location = _strip_access_token_query(parsed)
+        try:
+            self.send_response(303)
+            self.send_header("Location", location)
+            self._send_access_cookie()
+            self.end_headers()
+        except CLIENT_DISCONNECT_ERRORS:
+            return True
+        return True
+
+    def _authorize_request(self, parsed) -> bool:
+        if not ACCESS_TOKEN or _is_public_path(parsed.path):
+            return True
+
+        token, source = self._request_access_token(parsed)
+        if _access_token_matches(token, ACCESS_TOKEN):
+            if source in {"query", "header"}:
+                self._remember_access_token = True
+            return True
+
+        if parsed.path.startswith("/api/"):
+            self._send_json(
+                401,
+                {"error": "需要访问 token。请在 URL 添加 ?token=... 完成授权。"},
+            )
+            return False
+
+        body = (
+            "<!doctype html><meta charset=\"utf-8\">"
+            "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+            "<title>需要访问 token</title>"
+            "<body style=\"font-family: sans-serif; padding: 2rem; line-height: 1.7;\">"
+            "<h1>需要访问 token</h1>"
+            "<p>请在当前地址后添加 <code>?token=你的访问token</code> 完成授权。"
+            "授权成功后，本浏览器会长期记住登录状态。</p>"
+            "</body>"
+        ).encode("utf-8")
+        try:
+            self.send_response(401)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except CLIENT_DISCONNECT_ERRORS:
+            return False
+        return False
+
+    def _request_access_token(self, parsed) -> tuple[str, str]:
+        token = _query_access_token(parsed.query)
+        if token:
+            return token, "query"
+
+        header_token = self.headers.get("X-Access-Token", "").strip()
+        if header_token:
+            return header_token, "header"
+
+        authorization = self.headers.get("Authorization", "").strip()
+        if authorization.lower().startswith("bearer "):
+            bearer_token = authorization[7:].strip()
+            if bearer_token:
+                return bearer_token, "header"
+
+        cookie_token = self._access_cookie_token()
+        if cookie_token:
+            return cookie_token, "cookie"
+
+        return "", ""
+
+    def _access_cookie_token(self) -> str:
+        raw_cookie = self.headers.get("Cookie", "")
+        if not raw_cookie:
+            return ""
+        try:
+            cookies = SimpleCookie()
+            cookies.load(raw_cookie)
+        except CookieError:
+            return ""
+        morsel = cookies.get(ACCESS_TOKEN_COOKIE_NAME)
+        return morsel.value.strip() if morsel else ""
+
+    def _send_access_cookie(self) -> None:
+        cookie = SimpleCookie()
+        cookie[ACCESS_TOKEN_COOKIE_NAME] = ACCESS_TOKEN
+        morsel = cookie[ACCESS_TOKEN_COOKIE_NAME]
+        morsel["path"] = "/"
+        morsel["max-age"] = str(ACCESS_TOKEN_COOKIE_MAX_AGE)
+        morsel["samesite"] = "Lax"
+        morsel["httponly"] = True
+        self.send_header("Set-Cookie", morsel.OutputString())
 
     def _send_json(self, status_code: int, payload: dict) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -497,6 +650,16 @@ class AppHandler(SimpleHTTPRequestHandler):
             self.wfile.write(body)
         except CLIENT_DISCONNECT_ERRORS:
             return
+
+    def end_headers(self) -> None:
+        if getattr(self, "_remember_access_token", False):
+            self._send_access_cookie()
+            self._remember_access_token = False
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("X-Frame-Options", "SAMEORIGIN")
+        self.send_header("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
+        super().end_headers()
 
     def _review_session_key(self) -> str:
         raw_value = self.headers.get("X-Review-Session", "").strip()
@@ -631,6 +794,93 @@ def _load_hosts(config: dict, cli_hosts: list[str] | None) -> list[str]:
     return hosts
 
 
+def _load_allowed_hosts(config: dict) -> list[str]:
+    return [_normalize_host_header(host) for host in _normalize_hosts(config.get("allowed_hosts"))]
+
+
+def _load_access_token(config: dict, base_dir: Path = BASE_DIR) -> str:
+    token_file = str(config.get("access_token_file", "") or "").strip()
+    if token_file:
+        path = _resolve_path(token_file, base_dir)
+        if path is None:
+            return ""
+        try:
+            token = path.read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            raise ValueError(f"无法读取 access_token_file：{path}") from exc
+        if not token:
+            raise ValueError(f"access_token_file 为空：{path}")
+        return token
+    return str(config.get("access_token", "") or "").strip()
+
+
+def _normalize_host_header(raw_host: str) -> str:
+    host = str(raw_host or "").strip().lower()
+    if not host:
+        return ""
+    if host.startswith("["):
+        end = host.find("]")
+        return host[1:end] if end > 0 else host.strip("[]")
+    if host.count(":") == 1:
+        name, port = host.rsplit(":", 1)
+        if port.isdigit():
+            return name
+    return host
+
+
+def _host_allowed(host: str, allowed_hosts: list[str]) -> bool:
+    return "*" in allowed_hosts or host in allowed_hosts
+
+
+def _is_public_path(path: str) -> bool:
+    if path in PUBLIC_API_PATHS or path in PUBLIC_STATIC_PATHS:
+        return True
+    if ".." in unquote(path).split("/"):
+        return False
+    return any(path.startswith(prefix) for prefix in PUBLIC_STATIC_PREFIXES)
+
+
+def _query_access_token(query: str) -> str:
+    for key, value in parse_qsl(query, keep_blank_values=True):
+        if key in ACCESS_TOKEN_QUERY_KEYS and value:
+            return value.strip()
+    return ""
+
+
+def _access_token_matches(candidate: str, expected: str) -> bool:
+    if not candidate or not expected:
+        return False
+    return hmac.compare_digest(candidate, expected)
+
+
+def _strip_access_token_query(parsed) -> str:
+    filtered_params = [
+        (key, value)
+        for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+        if key not in ACCESS_TOKEN_QUERY_KEYS
+    ]
+    return urlunparse(
+        (
+            "",
+            "",
+            parsed.path or "/",
+            parsed.params,
+            urlencode(filtered_params),
+            parsed.fragment,
+        )
+    )
+
+
+def _load_max_request_body_bytes(config: dict) -> int:
+    if "max_request_body_bytes" in config:
+        raw_value = config.get("max_request_body_bytes")
+        return max(1024 * 1024, int(raw_value))
+    if "max_request_body_mb" in config:
+        raw_value = config.get("max_request_body_mb")
+        return max(1, int(raw_value)) * 1024 * 1024
+    return DEFAULT_MAX_REQUEST_BODY_BYTES
+
+
 def _is_ipv6_host(host: str) -> bool:
     return ":" in host
 
@@ -732,8 +982,11 @@ def main() -> None:
     if args.db_path:
         db_path = _resolve_path(args.db_path, BASE_DIR) or DEFAULT_DB_PATH
 
-    global SERVICE, AI_WORKER, VERBOSE
+    global SERVICE, AI_WORKER, VERBOSE, ALLOWED_HOSTS, MAX_REQUEST_BODY_BYTES, ACCESS_TOKEN
     VERBOSE = verbose
+    ALLOWED_HOSTS = _load_allowed_hosts(config)
+    MAX_REQUEST_BODY_BYTES = _load_max_request_body_bytes(config)
+    ACCESS_TOKEN = _load_access_token(config, config_base_dir)
     SERVICE = WordService(db_path)
     AI_WORKER = AIAnnotationWorker(SERVICE, ai_config)
     AI_WORKER.start()
@@ -753,6 +1006,10 @@ def main() -> None:
         )
         _log(f"Using database: {db_path}")
         _log(f"Verbose logging: {'on' if verbose else 'off'}")
+        _log(f"Max request body: {MAX_REQUEST_BODY_BYTES // 1024 // 1024} MiB")
+        _log(f"Access token auth: {'on' if ACCESS_TOKEN else 'off'}")
+        if ALLOWED_HOSTS:
+            _log(f"Allowed Host headers: {', '.join(ALLOWED_HOSTS)}")
         if ai_config.is_configured():
             _log(f"AI annotation ready: {ai_config.model} @ {ai_config.request_url}")
         else:
