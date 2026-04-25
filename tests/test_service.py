@@ -340,6 +340,8 @@ class WordServiceTestCase(TestCase):
         self.assertEqual(entry["weight"], 9)
         self.assertFalse(entry["weight_defined"])
         self.assertFalse(entry["pinyin_locked"])
+        self.assertEqual(entry["derivatives"], [])
+        self.assertEqual(entry["derivatives_count"], 0)
 
     def test_update_entry_without_weight_preserves_weight_defined(self) -> None:
         with mock.patch("app.service.transliterate_phrase", return_value="wei ding yi"):
@@ -485,6 +487,7 @@ class WordServiceTestCase(TestCase):
                 {
                     "phrase": "新词",
                     "pinyin": "",
+                    "derivatives": ["候选一", "候选二", "候选一"],
                     "weight": "7",
                     "status": "accepted",
                     "imported_at": "2026-04-12T12:30:00",
@@ -494,6 +497,8 @@ class WordServiceTestCase(TestCase):
 
         self.assertEqual(updated["phrase"], "新词")
         self.assertEqual(updated["pinyin"], "xīn cí")
+        self.assertEqual(updated["derivatives"], ["候选一", "候选二"])
+        self.assertEqual(updated["derivatives_count"], 2)
         self.assertEqual(updated["weight"], 7)
         self.assertEqual(updated["status"], "accepted")
         self.assertTrue(updated["imported_at"].startswith("2026-04-12T12:30:00"))
@@ -510,6 +515,51 @@ class WordServiceTestCase(TestCase):
 
         with self.assertRaisesRegex(ValueError, "重复词条"):
             self.service.update_entry(entries["二"]["id"], {"phrase": "一"})
+
+    def test_delete_entry_removes_entry_and_updates_stats(self) -> None:
+        with mock.patch("app.service.transliterate_phrase", side_effect=["yī", "èr"]):
+            self.service.import_text("一\n二")
+
+        entries = {
+            item["phrase"]: item
+            for item in self.service.list_entries(page=1, page_size=10)["items"]
+        }
+        self.service.update_status(entries["一"]["id"], "accepted")
+
+        deleted = self.service.delete_entry(entries["一"]["id"])
+        page = self.service.list_entries(page=1, page_size=10)
+        stats = self.service.get_stats()
+
+        self.assertEqual(deleted["phrase"], "一")
+        self.assertIsNone(self.service.get_entry(entries["一"]["id"]))
+        self.assertEqual(page["total"], 1)
+        self.assertEqual(page["items"][0]["phrase"], "二")
+        self.assertEqual(stats["accepted"], 0)
+        self.assertEqual(stats["pending"], 1)
+
+    def test_delete_entry_prunes_review_history_without_losing_current_pointer(self) -> None:
+        with mock.patch("app.service.transliterate_phrase", side_effect=["jiǎ", "yǐ", "bǐng"]):
+            self.service.import_text("甲\n乙\n丙")
+
+        entries = {
+            item["phrase"]: item
+            for item in self.service.list_entries(page=1, page_size=10)["items"]
+        }
+        with mock.patch("app.service.random.randint", return_value=entries["甲"]["id"]):
+            self.service.advance_review()
+        with mock.patch("app.service.random.randint", return_value=entries["乙"]["id"]):
+            self.service.advance_review()
+        with mock.patch("app.service.random.randint", return_value=entries["丙"]["id"]):
+            before_delete = self.service.advance_review()
+
+        self.assertEqual(before_delete["current_entry"]["phrase"], "丙")
+
+        self.service.delete_entry(entries["乙"]["id"])
+        restored = self.service.get_review_state()
+
+        self.assertEqual([item["phrase"] for item in restored["history"]], ["甲", "丙"])
+        self.assertEqual(restored["pointer"], 1)
+        self.assertEqual(restored["current_entry"]["phrase"], "丙")
 
     def test_batch_update_entries_can_change_multiple_fields(self) -> None:
         with mock.patch("app.service.transliterate_phrase", side_effect=["jiǎ", "yǐ"]):
@@ -754,6 +804,37 @@ class WordServiceTestCase(TestCase):
 
         self.assertEqual(self.service.count_export_entries(["accepted"]), 1)
         self.assertEqual(self.service.count_export_entries(["accepted", "rejected"]), 2)
+
+    def test_entry_derivatives_can_be_edited_and_exported_as_opencc(self) -> None:
+        with mock.patch("app.service.transliterate_phrase", side_effect=["a", "b"]):
+            self.service.import_text("甲\n乙")
+
+        entries = {
+            item["phrase"]: item
+            for item in self.service.list_entries(page=1, page_size=10)["items"]
+        }
+        self.service.update_status(entries["甲"]["id"], "accepted")
+        self.service.update_status(entries["乙"]["id"], "accepted")
+
+        updated = self.service.update_entry(
+            entries["甲"]["id"],
+            {"derivatives": "😀\n😀\t😄\n  "},
+        )
+
+        self.assertEqual(updated["derivatives"], ["😀", "😄"])
+        self.assertEqual(updated["derivatives_count"], 2)
+        self.assertEqual(
+            self.service.count_export_entries(["accepted"], export_mode="opencc"),
+            1,
+        )
+        self.assertEqual(
+            self.service.export_dictionary(
+                statuses=["accepted"],
+                export_mode="opencc",
+                dictionary_name="emoji-demo",
+            ),
+            "甲\t甲 😀 😄\n",
+        )
 
     def test_export_dictionary_sanitizes_dictionary_name(self) -> None:
         with mock.patch("app.service.transliterate_phrase", return_value="a"):

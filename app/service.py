@@ -29,6 +29,7 @@ EXPORT_DICTIONARY_NAME_UNSAFE_PATTERN = re.compile(r"[^A-Za-z0-9_.-]+")
 DEFAULT_DICTIONARY_NAME = "rime_word_marker_export"
 DEFAULT_REVIEW_SESSION = "default"
 IMPORT_IGNORED_CHARACTERS = "\u200c"
+DERIVATIVE_SPLIT_PATTERN = re.compile(r"[\t\r\n]+")
 REVIEW_HISTORY_LIMIT = 500
 REVIEW_MODE_SEQUENTIAL = "sequential"
 REVIEW_MODE_RANDOM = "random"
@@ -89,6 +90,7 @@ class WordService:
                     phrase TEXT NOT NULL UNIQUE,
                     pinyin TEXT NOT NULL,
                     pinyin_locked INTEGER NOT NULL DEFAULT 0,
+                    derivatives TEXT NOT NULL DEFAULT '[]',
                     weight INTEGER NOT NULL DEFAULT 1,
                     weight_defined INTEGER NOT NULL DEFAULT 0,
                     status TEXT NOT NULL DEFAULT 'pending',
@@ -132,6 +134,11 @@ class WordService:
                     "ALTER TABLE entries ADD COLUMN pinyin_locked INTEGER NOT NULL DEFAULT 0"
                 )
                 entry_columns.add("pinyin_locked")
+            if "derivatives" not in entry_columns:
+                connection.execute(
+                    "ALTER TABLE entries ADD COLUMN derivatives TEXT NOT NULL DEFAULT '[]'"
+                )
+                entry_columns.add("derivatives")
             for column_name, column_type in (
                 ("ai_label", "TEXT"),
                 ("ai_score", "REAL"),
@@ -522,6 +529,7 @@ class WordService:
         statuses: list[str] | None = None,
         include_weight: bool = False,
         include_ai_assist: bool = False,
+        export_mode: str = "main",
         include_mixed: bool = False,
         mixed_scheme: str = "full_pinyin",
         omit_yaml_header: bool = False,
@@ -532,6 +540,7 @@ class WordService:
                 statuses=statuses,
                 include_weight=include_weight,
                 include_ai_assist=include_ai_assist,
+                export_mode=export_mode,
                 include_mixed=include_mixed,
                 mixed_scheme=mixed_scheme,
                 omit_yaml_header=omit_yaml_header,
@@ -544,6 +553,7 @@ class WordService:
         statuses: list[str] | None = None,
         include_weight: bool = False,
         include_ai_assist: bool = False,
+        export_mode: str = "main",
         include_mixed: bool = False,
         mixed_scheme: str = "full_pinyin",
         omit_yaml_header: bool = False,
@@ -551,6 +561,14 @@ class WordService:
     ):
         dictionary_name = self.normalize_export_dictionary_name(dictionary_name)
         statuses = self._normalize_statuses(statuses or DEFAULT_EXPORT_STATUSES)
+        if include_mixed and export_mode == "main":
+            export_mode = "mixed"
+        export_mode = self._normalize_export_mode(export_mode)
+        if export_mode == "opencc":
+            yield from self._iter_opencc_export_lines(statuses, include_ai_assist)
+            return
+
+        include_mixed = export_mode == "mixed"
         mixed_scheme = normalize_mixed_export_scheme(mixed_scheme) if include_mixed else "full_pinyin"
         placeholders = ",".join("?" for _ in statuses)
         header_lines = [
@@ -613,14 +631,80 @@ class WordService:
                     columns.append(str(row["weight"]))
                 yield "\t".join(columns) + "\n"
 
+    def _iter_opencc_export_lines(
+        self,
+        statuses: list[str],
+        include_ai_assist: bool,
+    ):
+        placeholders = ",".join("?" for _ in statuses)
+        with self._managed_connection() as connection:
+            rows = connection.execute(
+                f"""
+                WITH export_view AS (
+                    SELECT
+                        id,
+                        phrase,
+                        derivatives,
+                        weight,
+                        CASE
+                            WHEN status IN ('accepted', 'rejected') THEN status
+                            WHEN ? = 1 AND status = 'pending' AND ai_label IN ('accepted', 'rejected')
+                                THEN ai_label
+                            ELSE status
+                        END AS effective_status
+                    FROM entries
+                )
+                SELECT phrase, derivatives
+                FROM export_view
+                WHERE effective_status IN ({placeholders})
+                    AND derivatives != '[]'
+                ORDER BY weight DESC, id ASC
+                """,
+                [1 if include_ai_assist else 0, *statuses],
+            )
+            for row in rows:
+                derivatives = self._load_derivatives(row["derivatives"])
+                if derivatives:
+                    phrase = row["phrase"]
+                    yield f"{phrase}\t{' '.join([phrase, *derivatives])}\n"
+
     def count_export_entries(
         self,
         statuses: list[str] | None = None,
         include_ai_assist: bool = False,
+        export_mode: str = "main",
         include_mixed: bool = False,
     ) -> int:
         normalized_statuses = self._normalize_statuses(statuses or DEFAULT_EXPORT_STATUSES)
+        if include_mixed and export_mode == "main":
+            export_mode = "mixed"
+        export_mode = self._normalize_export_mode(export_mode)
         placeholders = ",".join("?" for _ in normalized_statuses)
+        if export_mode == "opencc":
+            with self._managed_connection() as connection:
+                row = connection.execute(
+                    f"""
+                    WITH export_view AS (
+                        SELECT
+                            derivatives,
+                            CASE
+                                WHEN status IN ('accepted', 'rejected') THEN status
+                                WHEN ? = 1 AND status = 'pending' AND ai_label IN ('accepted', 'rejected')
+                                    THEN ai_label
+                                ELSE status
+                            END AS effective_status
+                        FROM entries
+                    )
+                    SELECT COUNT(*) AS total
+                    FROM export_view
+                    WHERE effective_status IN ({placeholders})
+                        AND derivatives != '[]'
+                    """,
+                    [1 if include_ai_assist else 0, *normalized_statuses],
+                ).fetchone()
+            return int(row["total"]) if row else 0
+
+        include_mixed = export_mode == "mixed"
 
         with self._managed_connection() as connection:
             row = connection.execute(
@@ -653,6 +737,13 @@ class WordService:
             ).fetchone()
 
         return int(row["total"]) if row else 0
+
+    @staticmethod
+    def _normalize_export_mode(export_mode: str) -> str:
+        normalized = str(export_mode or "main").strip().lower()
+        if normalized not in {"main", "mixed", "opencc"}:
+            raise ValueError("无效导出类型。")
+        return normalized
 
     def get_ai_overview(
         self,
@@ -1337,6 +1428,63 @@ class WordService:
             ).fetchone()
         return self._row_to_entry(row) if row else None
 
+    def delete_entry(self, entry_id: int) -> dict[str, Any]:
+        with self._managed_connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM entries WHERE id = ?",
+                (entry_id,),
+            ).fetchone()
+            if row is None:
+                raise LookupError("词条不存在。")
+            entry = self._row_to_entry(row)
+            connection.execute("DELETE FROM entries WHERE id = ?", (entry_id,))
+            self._remove_entry_from_review_states(connection, entry_id)
+            connection.commit()
+
+        if entry["status"] in {ACCEPTED, REJECTED}:
+            self._invalidate_ai_training_examples_cache()
+        return entry
+
+    def _remove_entry_from_review_states(
+        self,
+        connection: sqlite3.Connection,
+        entry_id: int,
+    ) -> None:
+        rows = connection.execute(
+            "SELECT session_key, history_json, pointer, mode FROM review_state"
+        ).fetchall()
+        for row in rows:
+            try:
+                history_ids = [int(item) for item in json.loads(row["history_json"])]
+            except (TypeError, ValueError, json.JSONDecodeError):
+                history_ids = []
+            if entry_id not in history_ids:
+                continue
+
+            pointer = int(row["pointer"])
+            mode = row["mode"] if row["mode"] in VALID_REVIEW_MODES else REVIEW_MODE_RANDOM
+            current_id = history_ids[pointer] if 0 <= pointer < len(history_ids) else None
+            next_history_ids = [item for item in history_ids if item != entry_id]
+
+            if not next_history_ids:
+                next_pointer = -1
+            elif pointer >= len(history_ids):
+                next_pointer = len(next_history_ids)
+            elif current_id is not None and current_id in next_history_ids:
+                next_pointer = next_history_ids.index(current_id)
+            else:
+                removed_before = sum(1 for item in history_ids[:pointer] if item == entry_id)
+                next_pointer = min(max(0, pointer - removed_before), len(next_history_ids) - 1)
+
+            self._save_review_state(
+                connection,
+                row["session_key"],
+                next_history_ids,
+                next_pointer,
+                mode,
+                commit=False,
+            )
+
     def update_status(self, entry_id: int, status: str) -> dict[str, Any]:
         if status not in VALID_STATUSES:
             raise ValueError("无效状态。")
@@ -1550,6 +1698,7 @@ class WordService:
             "phrase",
             "pinyin",
             "pinyin_locked",
+            "derivatives",
             "weight",
             "status",
             "imported_at",
@@ -1599,6 +1748,10 @@ class WordService:
                 pinyin_locked = self._coerce_bool(updates.get("pinyin_locked"))
             else:
                 pinyin_locked = current["pinyin_locked"]
+
+            derivatives = current["derivatives"]
+            if "derivatives" in updates:
+                derivatives = self._normalize_derivatives(updates["derivatives"])
 
             weight = current["weight"]
             weight_defined = current["weight_defined"]
@@ -1652,7 +1805,7 @@ class WordService:
                 """
                 UPDATE entries
                 SET phrase = ?, pinyin = ?, pinyin_locked = ?, weight = ?, weight_defined = ?,
-                    status = ?, imported_at = ?, labeled_at = ?,
+                    derivatives = ?, status = ?, imported_at = ?, labeled_at = ?,
                     ai_label = ?, ai_score = ?, ai_labeled_at = ?, ai_model = ?, ai_prompt_version = ?
                 WHERE id = ?
                 """,
@@ -1662,6 +1815,7 @@ class WordService:
                     1 if pinyin_locked else 0,
                     weight,
                     1 if weight_defined else 0,
+                    json.dumps(derivatives, ensure_ascii=False),
                     status,
                     imported_at,
                     labeled_at,
@@ -1932,10 +2086,15 @@ class WordService:
 
     @staticmethod
     def _row_to_entry(row: sqlite3.Row) -> dict[str, Any]:
+        derivatives = WordService._load_derivatives(
+            row["derivatives"] if "derivatives" in row.keys() else "[]"
+        )
         return {
             "id": row["id"],
             "phrase": row["phrase"],
             "pinyin": row["pinyin"],
+            "derivatives": derivatives,
+            "derivatives_count": len(derivatives),
             "weight": row["weight"],
             "weight_defined": bool(row["weight_defined"]) if "weight_defined" in row.keys() else False,
             "pinyin_locked": bool(row["pinyin_locked"]) if "pinyin_locked" in row.keys() else False,
@@ -1948,6 +2107,37 @@ class WordService:
             "ai_model": row["ai_model"] if "ai_model" in row.keys() else None,
             "ai_prompt_version": row["ai_prompt_version"] if "ai_prompt_version" in row.keys() else None,
         }
+
+    @staticmethod
+    def _load_derivatives(raw_value: Any) -> list[str]:
+        if isinstance(raw_value, list):
+            return WordService._normalize_derivatives(raw_value)
+        try:
+            decoded = json.loads(str(raw_value or "[]"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return []
+        return WordService._normalize_derivatives(decoded)
+
+    @staticmethod
+    def _normalize_derivatives(raw_value: Any) -> list[str]:
+        if raw_value is None:
+            raw_items: list[Any] = []
+        elif isinstance(raw_value, str):
+            raw_items = DERIVATIVE_SPLIT_PATTERN.split(raw_value)
+        elif isinstance(raw_value, list):
+            raw_items = raw_value
+        else:
+            raw_items = [raw_value]
+
+        derivatives: list[str] = []
+        seen: set[str] = set()
+        for raw_item in raw_items:
+            item = str(raw_item).strip()
+            if not item or item in seen:
+                continue
+            seen.add(item)
+            derivatives.append(item)
+        return derivatives
 
     @staticmethod
     def _coerce_bool(raw_value: Any) -> bool:

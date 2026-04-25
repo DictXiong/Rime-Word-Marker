@@ -256,6 +256,8 @@ function cacheElements() {
   els.includeWeight = document.getElementById("includeWeight");
   els.includeAiAssist = document.getElementById("includeAiAssist");
   els.omitYamlHeader = document.getElementById("omitYamlHeader");
+  els.exportModeInputs = [...document.querySelectorAll('input[name="exportMode"]')];
+  els.mixedExportPanel = document.getElementById("mixedExportPanel");
   els.includeMixedWords = document.getElementById("includeMixedWords");
   els.mixedPinyinScheme = document.getElementById("mixedPinyinScheme");
   els.exportCountNote = document.getElementById("exportCountNote");
@@ -308,6 +310,7 @@ function cacheElements() {
   els.editEntryId = document.getElementById("editEntryId");
   els.editPhrase = document.getElementById("editPhrase");
   els.editPinyin = document.getElementById("editPinyin");
+  els.editDerivatives = document.getElementById("editDerivatives");
   els.editWeight = document.getElementById("editWeight");
   els.editStatus = document.getElementById("editStatus");
   els.editImportedAt = document.getElementById("editImportedAt");
@@ -508,12 +511,15 @@ function bindEvents() {
       }
 
       const params = new URLSearchParams();
+      const exportMode = getSelectedExportMode();
       params.set("statuses", statuses.join(","));
       params.set("include_weight", els.includeWeight.checked ? "1" : "0");
       params.set("include_ai_assist", els.includeAiAssist.checked ? "1" : "0");
       params.set("omit_yaml_header", els.omitYamlHeader?.checked ? "1" : "0");
-      params.set("include_mixed", els.includeMixedWords?.checked ? "1" : "0");
-      params.set("mixed_scheme", els.mixedPinyinScheme?.value || "full_pinyin");
+      params.set("export_mode", exportMode);
+      if (exportMode === "mixed") {
+        params.set("mixed_scheme", els.mixedPinyinScheme?.value || "full_pinyin");
+      }
       params.set("name", els.exportName.value.trim() || "rime_word_marker_export");
       window.location.href = `/api/export?${params.toString()}`;
     });
@@ -521,8 +527,8 @@ function bindEvents() {
     syncMixedExportOptions();
     [
       els.includeAiAssist,
-      els.includeMixedWords,
       els.mixedPinyinScheme,
+      ...els.exportModeInputs,
       ...document.querySelectorAll('input[name="exportStatus"]'),
     ].filter(Boolean).forEach((input) => {
       input.addEventListener("change", () => {
@@ -610,6 +616,12 @@ function bindEvents() {
         return;
       }
 
+      const deleteButton = event.target.closest("[data-delete-entry-id]");
+      if (deleteButton) {
+        await deleteEntry(Number(deleteButton.dataset.deleteEntryId));
+        return;
+      }
+
       const pinyinLockButton = event.target.closest("[data-toggle-pinyin-lock-id]");
       if (pinyinLockButton) {
         await toggleEntryPinyinLock(Number(pinyinLockButton.dataset.togglePinyinLockId));
@@ -663,6 +675,9 @@ function bindEvents() {
     });
     els.editLabeledAt.addEventListener("input", () => {
       state.edit.forceClearLabeledAt = false;
+    });
+    els.editDerivatives?.addEventListener("input", () => {
+      autoResizeTextarea(els.editDerivatives);
     });
 
     bindDialogEvents(els.bulkEditDialog, closeBulkEditDialog);
@@ -1524,7 +1539,9 @@ function renderEntryRow(entry) {
       </td>
       <td class="col-id">${entry.id}</td>
       <td class="col-phrase">
-        <div class="table-phrase">${escapeHtml(entry.phrase)}</div>
+        <div class="table-phrase">
+          ${escapeHtml(entry.phrase)}${renderDerivativeMarker(entry)}
+        </div>
       </td>
       <td class="col-pinyin">
         <div class="table-pinyin-cell">
@@ -1547,10 +1564,48 @@ function renderEntryRow(entry) {
           ${renderManageButton(entry, "accepted")}
           ${renderManageButton(entry, "pending")}
           ${renderManageButton(entry, "rejected")}
+          <button class="table-delete-button" data-delete-entry-id="${entry.id}">删除</button>
         </div>
       </td>
     </tr>
   `;
+}
+
+function renderDerivativeMarker(entry) {
+  const derivatives = Array.isArray(entry.derivatives) ? entry.derivatives : [];
+  if (!derivatives.length) return "";
+  const tip = `延伸词：${derivatives.join("、")}`;
+  return `
+    <button
+      class="derivative-marker has-tip"
+      type="button"
+      data-edit-entry-id="${entry.id}"
+      aria-label="有 ${derivatives.length} 个延伸词，点击编辑"
+      data-tip="${escapeHtml(tip)}"
+    >✦</button>
+  `;
+}
+
+async function deleteEntry(entryId) {
+  if (!entryId) return;
+  const entry = state.manage.currentItems.find((item) => item.id === entryId);
+  const phrase = entry?.phrase ? `“${entry.phrase}”` : `ID ${entryId}`;
+  const confirmed = window.confirm(`确定删除词条 ${phrase}？此操作不可撤销。`);
+  if (!confirmed) return;
+
+  try {
+    const payload = await postJSON(`/api/entries/${entryId}/delete`, {});
+    state.manage.selectedIds.delete(entryId);
+    state.manage.currentItems = state.manage.currentItems.filter((item) => item.id !== entryId);
+    state.review.timeline = state.review.timeline.filter((item) => item.id !== entryId);
+    updateSelectedCount();
+    await refreshStats(payload.stats);
+    void loadAiOverview(false);
+    await loadManageEntries();
+    showToast(`已删除词条${phrase}。`);
+  } catch (error) {
+    showToast(error.message, true);
+  }
 }
 
 function renderPinyinLockButton(entry) {
@@ -1796,11 +1851,16 @@ async function openEditDialog(entryId) {
     els.editEntryId.value = String(entry.id);
     els.editPhrase.value = entry.phrase;
     els.editPinyin.value = entry.pinyin || "";
+    if (els.editDerivatives) {
+      els.editDerivatives.value = (entry.derivatives || []).join("\n");
+      autoResizeTextarea(els.editDerivatives);
+    }
     els.editWeight.value = String(entry.weight);
     els.editStatus.value = entry.status;
     els.editImportedAt.value = toDatetimeLocalValue(entry.imported_at);
     els.editLabeledAt.value = toDatetimeLocalValue(entry.labeled_at);
     openDialog(els.entryEditDialog);
+    requestAnimationFrame(() => autoResizeTextarea(els.editDerivatives));
   } catch (error) {
     showToast(error.message, true);
   }
@@ -1810,6 +1870,9 @@ function closeEditDialog() {
   state.edit.entryId = null;
   state.edit.forceClearLabeledAt = false;
   state.edit.originalEntry = null;
+  if (els.editDerivatives) {
+    els.editDerivatives.style.height = "";
+  }
   closeDialog(els.entryEditDialog);
 }
 
@@ -1838,6 +1901,7 @@ async function saveEditForm() {
   const payload = {
     phrase: els.editPhrase.value.trim(),
     pinyin: els.editPinyin.value.trim(),
+    derivatives: els.editDerivatives?.value || "",
     status: els.editStatus.value,
     imported_at: fromDatetimeLocalValue(els.editImportedAt.value),
   };
@@ -1894,9 +1958,22 @@ function getSelectedExportStatuses() {
   return [...document.querySelectorAll('input[name="exportStatus"]:checked')].map((input) => input.value);
 }
 
+function getSelectedExportMode() {
+  return document.querySelector('input[name="exportMode"]:checked')?.value || "main";
+}
+
 function syncMixedExportOptions() {
-  if (!els.includeMixedWords || !els.mixedPinyinScheme) return;
-  els.mixedPinyinScheme.disabled = !els.includeMixedWords.checked;
+  const exportMode = getSelectedExportMode();
+  if (els.mixedExportPanel) {
+    els.mixedExportPanel.hidden = exportMode !== "mixed";
+  }
+  if (els.mixedPinyinScheme) {
+    els.mixedPinyinScheme.disabled = exportMode !== "mixed";
+  }
+  const isOpencc = exportMode === "opencc";
+  [els.includeWeight, els.omitYamlHeader].filter(Boolean).forEach((input) => {
+    input.disabled = isOpencc;
+  });
 }
 
 async function updateExportCount() {
@@ -1910,16 +1987,19 @@ async function updateExportCount() {
 
   try {
     const params = new URLSearchParams({ statuses: statuses.join(",") });
+    const exportMode = getSelectedExportMode();
     params.set("include_ai_assist", els.includeAiAssist?.checked ? "1" : "0");
-    params.set("include_mixed", els.includeMixedWords?.checked ? "1" : "0");
+    params.set("export_mode", exportMode);
     const payload = await fetchJSON(`/api/export/count?${params.toString()}`);
-    const exportMode = els.includeMixedWords?.checked
-      ? "仅导出中英混杂/全英文专用词典"
-      : "导出普通词典，不含中英混杂/全英文词条";
+    const exportModeText = {
+      main: "导出普通词典，不含中英混杂/全英文词条",
+      mixed: "仅导出中英混杂/全英文专用词典",
+      opencc: "导出 OpenCC 延伸词典",
+    }[exportMode] || "导出普通词典";
     const extras = [
       els.includeAiAssist?.checked ? "含 AI 辅助" : "",
     ].filter(Boolean);
-    els.exportCountNote.textContent = `当前选择将导出 ${payload.count} 条词条（${[exportMode, ...extras].join("，")}）。`;
+    els.exportCountNote.textContent = `当前选择将导出 ${payload.count} 条词条（${[exportModeText, ...extras].join("，")}）。`;
   } catch (error) {
     els.exportCountNote.textContent = `无法计算导出数量：${error.message}`;
   }
@@ -1970,6 +2050,12 @@ function closeDialog(dialog) {
   } else {
     dialog.removeAttribute("open");
   }
+}
+
+function autoResizeTextarea(textarea) {
+  if (!textarea) return;
+  textarea.style.height = "auto";
+  textarea.style.height = `${textarea.scrollHeight}px`;
 }
 
 function showMessage(message, isError = false) {

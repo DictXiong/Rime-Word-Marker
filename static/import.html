@@ -147,19 +147,29 @@
             </label>
 
             <div class="field">
-              <span>中英混杂词汇</span>
-              <div class="export-mixed-options">
+              <span>导出类型</span>
+              <div class="checkbox-grid export-mode-grid">
                 <label
-                  class="field inline compact-inline has-tip"
-                  data-tip="中英混杂词汇必须单独导出为专用词典。勾选后只导出含英文词条；不勾选则排除含英文词条。"
-                >
-                  <input type="checkbox" id="includeMixedWords" />
-                  <span>导出中英混杂/全英文专用词典</span>
-                </label>
+                  class="has-tip"
+                  data-tip="导出普通 Rime 词典，排除中英混杂/全英文词条。"
+                ><input type="radio" name="exportMode" value="main" checked /> 主词库</label>
+                <label
+                  class="has-tip"
+                  data-tip="中英混杂词汇必须单独导出为专用词典。选择后只导出含英文词条。"
+                ><input type="radio" name="exportMode" value="mixed" /> 中英混杂词库</label>
+                <label
+                  class="has-tip"
+                  data-tip="导出 OpenCC 扩展词典：每行格式为“输入内容、一个 Tab、输入内容原样和延伸词”。"
+                ><input type="radio" name="exportMode" value="opencc" /> OpenCC 延伸词</label>
+              </div>
+            </div>
+
+            <div class="field" id="mixedExportPanel">
+              <span>中英混杂编码</span>
+              <div class="export-mixed-options">
                 <select
                   class="has-tip"
                   id="mixedPinyinScheme"
-                  disabled
                   data-tip="选择中英混杂词汇的编码方案。全拼会合并为一个整体；双拼会按所选方案转换。"
                 >
                   <option value="full_pinyin">全拼</option>
@@ -173,7 +183,7 @@
               </div>
             </div>
 
-            <button class="primary-button alt" type="submit">导出为 Rime YAML</button>
+            <button class="primary-button alt" type="submit">导出词库</button>
             <p class="export-count-note" id="exportCountNote">当前选择将导出 0 条词条。</p>
           </form>
         </article>

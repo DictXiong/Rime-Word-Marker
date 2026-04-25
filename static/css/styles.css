@@ -1054,6 +1054,11 @@ textarea {
   line-height: 1.6;
 }
 
+#editDerivatives {
+  min-height: calc(1.6em + 28px);
+  overflow: hidden;
+}
+
 input[type="checkbox"],
 input[type="radio"] {
   width: 1.15rem;
@@ -1380,30 +1385,30 @@ input[type="radio"] {
 }
 
 .col-select {
-  width: 32px;
+  width: 28px;
 }
 
 .col-id {
-  width: 3em;
+  width: 42px;
   white-space: nowrap;
 }
 
 .col-phrase {
-  width: 6em;
+  width: 72px;
 }
 
 .col-pinyin {
-  width: 6.8em;
+  width: 90px;
 }
 
 .col-weight {
-  width: 42px;
+  width: 38px;
   white-space: nowrap;
 }
 
 .default-weight-note {
   color: var(--muted);
-  font-size: 0.82em;
+  font-size: 0.80em;
   white-space: nowrap;
 }
 
@@ -1422,13 +1427,14 @@ input[type="radio"] {
 }
 
 .col-actions {
-  width: 150px;
+  width: 180px;
 }
 
 .table-phrase {
   font-size: 1rem;
   font-weight: 800;
   white-space: normal;
+  text-wrap: pretty;
   word-break: break-word;
 }
 
@@ -1463,6 +1469,27 @@ input[type="radio"] {
 .pinyin-lock-button.is-locked {
   background: rgba(24, 80, 86, 0.12);
   border-color: rgba(24, 80, 86, 0.28);
+}
+
+.derivative-marker {
+  border: 1px solid rgba(24, 80, 86, 0.16);
+  border-radius: 999px;
+  min-width: 24px;
+  min-height: 24px;
+  padding: 2px 7px;
+  background: rgba(255, 255, 255, 0.78);
+  color: #214c52;
+  font-weight: 800;
+  cursor: pointer;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  vertical-align: 0.08em;
+}
+
+.derivative-marker:hover {
+  background: rgba(24, 80, 86, 0.1);
 }
 
 .table-actions {
@@ -1539,6 +1566,20 @@ input[type="radio"] {
 .table-status-button.active.rejected {
   border-color: rgba(188, 63, 50, 0.24);
   box-shadow: inset 0 0 0 1px rgba(188, 63, 50, 0.18);
+}
+
+.table-delete-button {
+  border: 1px solid rgba(188, 63, 50, 0.18);
+  border-radius: 999px;
+  padding: 7px 9px;
+  cursor: pointer;
+  background: rgba(255, 255, 255, 0.78);
+  color: var(--reject);
+  font-weight: 800;
+}
+
+.table-delete-button:hover {
+  background: rgba(188, 63, 50, 0.14);
 }
 
 .status-pill.compact {

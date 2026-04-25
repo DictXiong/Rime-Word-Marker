@@ -45,7 +45,9 @@ PAGE_ROUTES = {
 ENTRY_DETAIL_RE = re.compile(r"^/api/entries/(\d+)$")
 ENTRY_STATUS_RE = re.compile(r"^/api/entries/(\d+)/status$")
 ENTRY_UPDATE_RE = re.compile(r"^/api/entries/(\d+)/update$")
+ENTRY_DELETE_RE = re.compile(r"^/api/entries/(\d+)/delete$")
 SESSION_KEY_RE = re.compile(r"^[A-Za-z0-9._-]{1,120}$")
+CLIENT_DISCONNECT_ERRORS = (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)
 
 
 class ThreadingHTTPServerV6(ThreadingHTTPServer):
@@ -157,19 +159,24 @@ class AppHandler(SimpleHTTPRequestHandler):
 
                 include_weight = query.get("include_weight", ["0"])[0] == "1"
                 include_ai_assist = query.get("include_ai_assist", ["0"])[0] == "1"
-                include_mixed = query.get("include_mixed", ["0"])[0] == "1"
+                export_mode = query.get("export_mode", ["main"])[0]
                 omit_yaml_header = query.get("omit_yaml_header", ["0"])[0] == "1"
                 mixed_scheme = (
                     normalize_mixed_export_scheme(query.get("mixed_scheme", ["full_pinyin"])[0])
-                    if include_mixed
+                    if export_mode == "mixed"
                     else "full_pinyin"
                 )
                 dictionary_name = WordService.normalize_export_dictionary_name(
                     query.get("name", ["rime_word_marker_export"])[0]
                 )
-                filename = f"{dictionary_name}.dict.yaml"
+                filename = f"{dictionary_name}.opencc.txt" if export_mode == "opencc" else f"{dictionary_name}.dict.yaml"
                 self.send_response(200)
-                self.send_header("Content-Type", "application/x-yaml; charset=utf-8")
+                self.send_header(
+                    "Content-Type",
+                    "text/plain; charset=utf-8"
+                    if export_mode == "opencc"
+                    else "application/x-yaml; charset=utf-8",
+                )
                 self.send_header(
                     "Content-Disposition",
                     f'attachment; filename="{filename}"',
@@ -179,7 +186,7 @@ class AppHandler(SimpleHTTPRequestHandler):
                     statuses=statuses,
                     include_weight=include_weight,
                     include_ai_assist=include_ai_assist,
-                    include_mixed=include_mixed,
+                    export_mode=export_mode,
                     mixed_scheme=mixed_scheme,
                     omit_yaml_header=omit_yaml_header,
                     dictionary_name=dictionary_name,
@@ -194,14 +201,14 @@ class AppHandler(SimpleHTTPRequestHandler):
                 for value in raw_statuses:
                     statuses.extend(item for item in value.split(",") if item)
                 include_ai_assist = query.get("include_ai_assist", ["0"])[0] == "1"
-                include_mixed = query.get("include_mixed", ["0"])[0] == "1"
+                export_mode = query.get("export_mode", ["main"])[0]
                 self._send_json(
                     200,
                     {
                         "count": _service().count_export_entries(
                             statuses=statuses,
                             include_ai_assist=include_ai_assist,
-                            include_mixed=include_mixed,
+                            export_mode=export_mode,
                         )
                     },
                 )
@@ -219,6 +226,8 @@ class AppHandler(SimpleHTTPRequestHandler):
             self._send_json(404, {"error": "未找到接口。"})
         except ValueError as exc:
             self._send_json(400, {"error": str(exc)})
+        except CLIENT_DISCONNECT_ERRORS:
+            return
         except Exception as exc:  # pragma: no cover - defensive server path
             _log(f"[server] GET {parsed.path} failed {type(exc).__name__}: {exc}")
             self._send_json(500, {"error": f"服务器异常：{exc}"})
@@ -446,6 +455,14 @@ class AppHandler(SimpleHTTPRequestHandler):
                 self._send_json(200, {"entry": entry, "stats": _service().get_stats()})
                 return
 
+            match = ENTRY_DELETE_RE.match(parsed.path)
+            if match:
+                entry_id = int(match.group(1))
+                deleted = _service().delete_entry(entry_id)
+                _verbose_log_json("entry-deleted", {"entry_id": entry_id, "entry": _compact_entry(deleted)})
+                self._send_json(200, {"entry": deleted, "stats": _service().get_stats()})
+                return
+
             self._send_json(404, {"error": "未找到接口。"})
         except json.JSONDecodeError:
             self._send_json(400, {"error": "请求体不是合法 JSON。"})
@@ -453,6 +470,8 @@ class AppHandler(SimpleHTTPRequestHandler):
             self._send_json(404, {"error": str(exc)})
         except ValueError as exc:
             self._send_json(400, {"error": str(exc)})
+        except CLIENT_DISCONNECT_ERRORS:
+            return
         except Exception as exc:  # pragma: no cover - defensive server path
             _log(f"[server] POST {parsed.path} failed {type(exc).__name__}: {exc}")
             self._send_json(500, {"error": f"服务器异常：{exc}"})
@@ -470,11 +489,14 @@ class AppHandler(SimpleHTTPRequestHandler):
 
     def _send_json(self, status_code: int, payload: dict) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        self.send_response(status_code)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(status_code)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except CLIENT_DISCONNECT_ERRORS:
+            return
 
     def _review_session_key(self) -> str:
         raw_value = self.headers.get("X-Review-Session", "").strip()
