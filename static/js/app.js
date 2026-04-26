@@ -278,14 +278,14 @@ function cacheElements() {
   els.pageJumpForm = document.getElementById("pageJumpForm");
   els.pageJumpInput = document.getElementById("pageJumpInput");
   els.selectedCount = document.getElementById("selectedCount");
+  els.openCreateEntryButton = document.getElementById("openCreateEntryButton");
   els.selectPageButton = document.getElementById("selectPageButton");
   els.clearSelectionButton = document.getElementById("clearSelectionButton");
   els.bulkAcceptButton = document.getElementById("bulkAcceptButton");
   els.bulkPendingButton = document.getElementById("bulkPendingButton");
   els.bulkRejectButton = document.getElementById("bulkRejectButton");
-  els.bulkLockPinyinButton = document.getElementById("bulkLockPinyinButton");
-  els.bulkUnlockPinyinButton = document.getElementById("bulkUnlockPinyinButton");
   els.openBulkEditButton = document.getElementById("openBulkEditButton");
+  els.openBulkDerivativesButton = document.getElementById("openBulkDerivativesButton");
   els.aiEnabledToggle = document.getElementById("aiEnabledToggle");
   els.aiPanelNote = document.getElementById("aiPanelNote");
   els.aiTrainingSummary = document.getElementById("aiTrainingSummary");
@@ -310,6 +310,7 @@ function cacheElements() {
   els.editEntryId = document.getElementById("editEntryId");
   els.editPhrase = document.getElementById("editPhrase");
   els.editPinyin = document.getElementById("editPinyin");
+  els.editPinyinLocked = document.getElementById("editPinyinLocked");
   els.editDerivatives = document.getElementById("editDerivatives");
   els.editWeight = document.getElementById("editWeight");
   els.editStatus = document.getElementById("editStatus");
@@ -317,6 +318,19 @@ function cacheElements() {
   els.editLabeledAt = document.getElementById("editLabeledAt");
   els.editAutoPinyinButton = document.getElementById("editAutoPinyinButton");
   els.editClearLabeledAtButton = document.getElementById("editClearLabeledAtButton");
+
+  els.entryCreateDialog = document.getElementById("entryCreateDialog");
+  els.entryCreateForm = document.getElementById("entryCreateForm");
+  els.entryCreateCloseButton = document.getElementById("entryCreateCloseButton");
+  els.createPhrase = document.getElementById("createPhrase");
+  els.createWeight = document.getElementById("createWeight");
+  els.createPinyin = document.getElementById("createPinyin");
+  els.createDerivatives = document.getElementById("createDerivatives");
+  els.createAutoPinyinButton = document.getElementById("createAutoPinyinButton");
+  els.createPinyinLocked = document.getElementById("createPinyinLocked");
+  els.createStatus = document.getElementById("createStatus");
+  els.createImportedAt = document.getElementById("createImportedAt");
+  els.createLabeledAt = document.getElementById("createLabeledAt");
 
   els.bulkEditDialog = document.getElementById("bulkEditDialog");
   els.bulkEditForm = document.getElementById("bulkEditForm");
@@ -331,9 +345,16 @@ function cacheElements() {
   els.bulkApplyPinyin = document.getElementById("bulkApplyPinyin");
   els.bulkPinyin = document.getElementById("bulkPinyin");
   els.bulkRegeneratePinyin = document.getElementById("bulkRegeneratePinyin");
+  els.bulkApplyPinyinLocked = document.getElementById("bulkApplyPinyinLocked");
+  els.bulkPinyinLocked = document.getElementById("bulkPinyinLocked");
   els.bulkApplyLabeledAt = document.getElementById("bulkApplyLabeledAt");
   els.bulkLabeledAt = document.getElementById("bulkLabeledAt");
   els.bulkClearLabeledAt = document.getElementById("bulkClearLabeledAt");
+  els.bulkDerivativesDialog = document.getElementById("bulkDerivativesDialog");
+  els.bulkDerivativesForm = document.getElementById("bulkDerivativesForm");
+  els.bulkDerivativesCloseButton = document.getElementById("bulkDerivativesCloseButton");
+  els.bulkDerivativesText = document.getElementById("bulkDerivativesText");
+  els.bulkDerivativesResult = document.getElementById("bulkDerivativesResult");
 
   els.toast = document.getElementById("toast");
 }
@@ -579,6 +600,7 @@ function bindEvents() {
       updateSelectedCount();
       renderEntryList(state.manage.currentItems);
     });
+    els.openCreateEntryButton?.addEventListener("click", openCreateEntryDialog);
 
     els.bulkAcceptButton.addEventListener("click", async () => {
       await applyBulkStatus("accepted");
@@ -589,13 +611,8 @@ function bindEvents() {
     els.bulkRejectButton.addEventListener("click", async () => {
       await applyBulkStatus("rejected");
     });
-    els.bulkLockPinyinButton?.addEventListener("click", async () => {
-      await applyBulkPinyinLock(true);
-    });
-    els.bulkUnlockPinyinButton?.addEventListener("click", async () => {
-      await applyBulkPinyinLock(false);
-    });
     els.openBulkEditButton.addEventListener("click", openBulkEditDialog);
+    els.openBulkDerivativesButton?.addEventListener("click", openBulkDerivativesDialog);
     els.aiEnabledToggle?.addEventListener("change", async () => {
       await toggleAiEnabled(els.aiEnabledToggle.checked);
     });
@@ -619,12 +636,6 @@ function bindEvents() {
       const deleteButton = event.target.closest("[data-delete-entry-id]");
       if (deleteButton) {
         await deleteEntry(Number(deleteButton.dataset.deleteEntryId));
-        return;
-      }
-
-      const pinyinLockButton = event.target.closest("[data-toggle-pinyin-lock-id]");
-      if (pinyinLockButton) {
-        await toggleEntryPinyinLock(Number(pinyinLockButton.dataset.togglePinyinLockId));
         return;
       }
 
@@ -680,6 +691,19 @@ function bindEvents() {
       autoResizeTextarea(els.editDerivatives);
     });
 
+    bindDialogEvents(els.entryCreateDialog, closeCreateEntryDialog);
+    els.entryCreateCloseButton?.addEventListener("click", closeCreateEntryDialog);
+    els.entryCreateForm?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      await saveCreateEntryForm();
+    });
+    els.createAutoPinyinButton?.addEventListener("click", async () => {
+      await fillCreatePinyinFromPhrase();
+    });
+    els.createDerivatives?.addEventListener("input", () => {
+      autoResizeTextarea(els.createDerivatives);
+    });
+
     bindDialogEvents(els.bulkEditDialog, closeBulkEditDialog);
     els.bulkEditCloseButton.addEventListener("click", closeBulkEditDialog);
     els.bulkEditForm.addEventListener("submit", async (event) => {
@@ -691,11 +715,24 @@ function bindEvents() {
       els.bulkApplyWeight,
       els.bulkApplyImportedAt,
       els.bulkApplyPinyin,
+      els.bulkApplyPinyinLocked,
       els.bulkApplyLabeledAt,
       els.bulkRegeneratePinyin,
       els.bulkClearLabeledAt,
     ].forEach((checkbox) => {
       checkbox.addEventListener("change", updateBulkFieldStates);
+    });
+
+    bindDialogEvents(els.bulkDerivativesDialog, closeBulkDerivativesDialog);
+    els.bulkDerivativesCloseButton?.addEventListener("click", closeBulkDerivativesDialog);
+    els.bulkDerivativesText?.addEventListener("keydown", (event) => {
+      if (event.key !== "Tab") return;
+      event.preventDefault();
+      insertTextAtSelection(els.bulkDerivativesText, "\t");
+    });
+    els.bulkDerivativesForm?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      await saveBulkDerivativesForm();
     });
   }
 }
@@ -1545,8 +1582,7 @@ function renderEntryRow(entry) {
       </td>
       <td class="col-pinyin">
         <div class="table-pinyin-cell">
-          ${renderPinyinLockButton(entry)}
-          <div class="table-pinyin">${escapeHtml(entry.pinyin)}</div>
+          <div class="table-pinyin">${escapeHtml(entry.pinyin)}${renderPinyinLockMarker(entry)}</div>
         </div>
       </td>
       <td class="col-weight">${formatManageWeight(entry)}</td>
@@ -1608,18 +1644,15 @@ async function deleteEntry(entryId) {
   }
 }
 
-function renderPinyinLockButton(entry) {
-  const locked = !!entry.pinyin_locked;
-  const icon = locked ? "🔒" : "🔓";
-  const label = locked ? "拼音已锁定，点击解锁" : "拼音未锁定，点击锁定";
+function renderPinyinLockMarker(entry) {
+  if (!entry.pinyin_locked) return "";
+  const label = "拼音已锁定";
   return `
-    <button
-      class="pinyin-lock-button has-tip ${locked ? "is-locked" : ""}"
-      type="button"
-      data-toggle-pinyin-lock-id="${entry.id}"
+    <span
+      class="pinyin-lock-marker has-tip"
       aria-label="${label}"
       data-tip="${label}"
-    >${icon}</button>
+    >🔒</span>
   `;
 }
 
@@ -1697,41 +1730,6 @@ async function applyBulkStatus(status) {
   }
 }
 
-async function applyBulkPinyinLock(locked) {
-  const ids = getSelectedIds();
-  if (!ids.length) {
-    showToast("请先选择要处理的词条。", true);
-    return;
-  }
-
-  try {
-    const payload = await postJSON("/api/entries/bulk-update", {
-      ids,
-      updates: { pinyin_locked: locked },
-    });
-    applyBulkResponse(payload, locked ? "已锁定所选词条拼音。" : "已解锁所选词条拼音。");
-  } catch (error) {
-    showToast(error.message, true);
-  }
-}
-
-async function toggleEntryPinyinLock(entryId) {
-  const entry = state.manage.currentItems.find((item) => item.id === entryId);
-  if (!entry) return;
-
-  const nextLocked = !entry.pinyin_locked;
-  try {
-    const payload = await postJSON(`/api/entries/${entryId}/update`, {
-      pinyin_locked: nextLocked,
-    });
-    syncEntryAcrossViews(payload.entry);
-    await loadManageEntries();
-    showToast(nextLocked ? "拼音已锁定。" : "拼音已解锁。");
-  } catch (error) {
-    showToast(error.message, true);
-  }
-}
-
 function openBulkEditDialog() {
   if (!state.manage.selectedIds.size) {
     showToast("请先选择至少一条词条。", true);
@@ -1748,11 +1746,25 @@ function closeBulkEditDialog() {
   closeDialog(els.bulkEditDialog);
 }
 
+function openBulkDerivativesDialog() {
+  if (els.bulkDerivativesResult) {
+    els.bulkDerivativesResult.hidden = true;
+    els.bulkDerivativesResult.textContent = "";
+  }
+  openDialog(els.bulkDerivativesDialog);
+  window.setTimeout(() => els.bulkDerivativesText?.focus(), 0);
+}
+
+function closeBulkDerivativesDialog() {
+  closeDialog(els.bulkDerivativesDialog);
+}
+
 function updateBulkFieldStates() {
   els.bulkStatus.disabled = !els.bulkApplyStatus.checked;
   els.bulkWeight.disabled = !els.bulkApplyWeight.checked;
   els.bulkImportedAt.disabled = !els.bulkApplyImportedAt.checked;
   els.bulkPinyin.disabled = !els.bulkApplyPinyin.checked || els.bulkRegeneratePinyin.checked;
+  els.bulkPinyinLocked.disabled = !els.bulkApplyPinyinLocked.checked;
   els.bulkLabeledAt.disabled = !els.bulkApplyLabeledAt.checked || els.bulkClearLabeledAt.checked;
 }
 
@@ -1776,6 +1788,9 @@ async function saveBulkEditForm() {
   if (els.bulkApplyPinyin.checked) {
     updates.pinyin = els.bulkPinyin.value.trim();
   }
+  if (els.bulkApplyPinyinLocked.checked) {
+    updates.pinyin_locked = els.bulkPinyinLocked.value === "1";
+  }
   if (els.bulkApplyLabeledAt.checked) {
     updates.labeled_at = fromDatetimeLocalValue(els.bulkLabeledAt.value);
   }
@@ -1792,6 +1807,51 @@ async function saveBulkEditForm() {
   } catch (error) {
     showToast(error.message, true);
   }
+}
+
+async function saveBulkDerivativesForm() {
+  const text = els.bulkDerivativesText?.value.trim() || "";
+  if (!text) {
+    showToast("请先输入要更新的延伸词。", true);
+    return;
+  }
+
+  const mode =
+    document.querySelector('input[name="bulkDerivativesMode"]:checked')?.value || "merge";
+
+  try {
+    const payload = await postJSON("/api/entries/derivatives-bulk-update", {
+      text,
+      mode,
+    });
+    const summary = formatBulkDerivativesSummary(payload.result);
+    if (els.bulkDerivativesResult) {
+      els.bulkDerivativesResult.hidden = false;
+      els.bulkDerivativesResult.textContent = summary;
+    }
+    await loadManageEntries();
+    showToast(summary);
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+function formatBulkDerivativesSummary(result) {
+  const parts = [
+    `已更新 ${result.updated_count || 0} 条`,
+    `未变化 ${result.unchanged_count || 0} 条`,
+    `不存在 ${result.skipped_missing_count || 0} 条`,
+    `格式错误 ${result.skipped_invalid_count || 0} 行`,
+  ];
+  const missing = Array.isArray(result.missing_phrases) ? result.missing_phrases : [];
+  const invalidLines = Array.isArray(result.invalid_lines) ? result.invalid_lines : [];
+  if (missing.length) {
+    parts.push(`不存在示例：${missing.join("、")}`);
+  }
+  if (invalidLines.length) {
+    parts.push(`格式错误行：${invalidLines.join("、")}`);
+  }
+  return parts.join("；");
 }
 
 async function applyBulkResponse(payload, message) {
@@ -1851,6 +1911,9 @@ async function openEditDialog(entryId) {
     els.editEntryId.value = String(entry.id);
     els.editPhrase.value = entry.phrase;
     els.editPinyin.value = entry.pinyin || "";
+    if (els.editPinyinLocked) {
+      els.editPinyinLocked.checked = !!entry.pinyin_locked;
+    }
     if (els.editDerivatives) {
       els.editDerivatives.value = (entry.derivatives || []).join("\n");
       autoResizeTextarea(els.editDerivatives);
@@ -1874,6 +1937,106 @@ function closeEditDialog() {
     els.editDerivatives.style.height = "";
   }
   closeDialog(els.entryEditDialog);
+}
+
+function openCreateEntryDialog() {
+  if (els.entryCreateForm) {
+    els.entryCreateForm.reset();
+  }
+  if (els.createImportedAt) {
+    els.createImportedAt.value = toDatetimeLocalValue(new Date().toISOString());
+  }
+  if (els.createDerivatives) {
+    els.createDerivatives.style.height = "";
+  }
+  openDialog(els.entryCreateDialog);
+  window.setTimeout(() => els.createPhrase?.focus(), 0);
+}
+
+function closeCreateEntryDialog() {
+  if (els.createDerivatives) {
+    els.createDerivatives.style.height = "";
+  }
+  closeDialog(els.entryCreateDialog);
+}
+
+async function fillCreatePinyinFromPhrase() {
+  const phrase = els.createPhrase.value.trim();
+  if (!phrase) {
+    showToast("请先填写词条。", true);
+    return;
+  }
+
+  try {
+    els.createPinyin.value = await fetchGeneratedPinyin(phrase);
+    showToast("已根据词条自动生成拼音。");
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+async function saveCreateEntryForm() {
+  const phrase = els.createPhrase.value.trim();
+  if (!phrase) {
+    showToast("词条不能为空。", true);
+    return;
+  }
+
+  const payload = {
+    phrase,
+    pinyin: els.createPinyin.value.trim(),
+    pinyin_locked: !!els.createPinyinLocked?.checked,
+    derivatives: els.createDerivatives?.value || "",
+    status: els.createStatus.value,
+  };
+
+  const weight = els.createWeight.value.trim();
+  if (weight) {
+    payload.weight = weight;
+  }
+  if (els.createImportedAt.value) {
+    payload.imported_at = fromDatetimeLocalValue(els.createImportedAt.value);
+  }
+  if (els.createLabeledAt.value) {
+    payload.labeled_at = fromDatetimeLocalValue(els.createLabeledAt.value);
+  }
+
+  try {
+    const response = await postJSON("/api/entries/create", payload);
+    syncEntryAcrossViews(response.entry, { renderReview: false });
+    await refreshStats(response.stats);
+    void loadAiOverview(false);
+    state.manage.page = 1;
+    await loadManageEntries();
+    resetCreateEntryFormForNext();
+    showToast(`已新增词条“${response.entry.phrase}”。`);
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+function resetCreateEntryFormForNext() {
+  const keepStatus = els.createStatus?.value || "pending";
+  const keepImportedAt = els.createImportedAt?.value || "";
+  const keepPinyinLocked = !!els.createPinyinLocked?.checked;
+  els.createPhrase.value = "";
+  els.createPinyin.value = "";
+  els.createWeight.value = "";
+  els.createLabeledAt.value = "";
+  if (els.createDerivatives) {
+    els.createDerivatives.value = "";
+    autoResizeTextarea(els.createDerivatives);
+  }
+  if (els.createStatus) {
+    els.createStatus.value = keepStatus;
+  }
+  if (els.createImportedAt) {
+    els.createImportedAt.value = keepImportedAt || toDatetimeLocalValue(new Date().toISOString());
+  }
+  if (els.createPinyinLocked) {
+    els.createPinyinLocked.checked = keepPinyinLocked;
+  }
+  els.createPhrase.focus();
 }
 
 async function fillEditPinyinFromPhrase() {
@@ -1901,6 +2064,7 @@ async function saveEditForm() {
   const payload = {
     phrase: els.editPhrase.value.trim(),
     pinyin: els.editPinyin.value.trim(),
+    pinyin_locked: !!els.editPinyinLocked?.checked,
     derivatives: els.editDerivatives?.value || "",
     status: els.editStatus.value,
     imported_at: fromDatetimeLocalValue(els.editImportedAt.value),
@@ -2069,8 +2233,18 @@ function showMessage(message, isError = false) {
   els.importMessage.style.color = isError ? "#bc3f32" : "#0d6772";
 }
 
+function moveToastToVisibleLayer() {
+  if (!els.toast) return;
+  const openDialogs = Array.from(document.querySelectorAll("dialog[open]"));
+  const target = openDialogs.length ? openDialogs[openDialogs.length - 1] : document.body;
+  if (els.toast.parentElement !== target) {
+    target.appendChild(els.toast);
+  }
+}
+
 function showToast(message, isError = false) {
   if (!els.toast) return;
+  moveToastToVisibleLayer();
   els.toast.textContent = message;
   els.toast.style.background = isError ? "rgba(137, 27, 27, 0.92)" : "rgba(16, 47, 51, 0.92)";
   els.toast.classList.add("show");

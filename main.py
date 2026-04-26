@@ -462,6 +462,21 @@ class AppHandler(SimpleHTTPRequestHandler):
                 self._send_json(200, {**result, "stats": _service().get_stats()})
                 return
 
+            if parsed.path == "/api/entries/derivatives-bulk-update":
+                result = _service().bulk_update_derivatives(
+                    payload.get("text", ""),
+                    mode=payload.get("mode", "merge"),
+                )
+                _verbose_log_json("entries-derivatives-bulk-updated", result)
+                self._send_json(200, {"result": result, "stats": _service().get_stats()})
+                return
+
+            if parsed.path == "/api/entries/create":
+                entry = _service().create_entry(payload)
+                _verbose_log_json("entry-created", {"entry": _compact_entry(entry)})
+                self._send_json(200, {"entry": entry, "stats": _service().get_stats()})
+                return
+
             match = ENTRY_STATUS_RE.match(parsed.path)
             if match:
                 entry_id = int(match.group(1))

@@ -1020,6 +1020,26 @@ textarea {
   gap: 8px;
 }
 
+.inline-action-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.inline-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 8px 12px;
+  border: 1px solid rgba(13, 103, 114, 0.14);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+  color: #244b50;
+  font-weight: 700;
+}
+
 .field-wide {
   grid-column: 1 / -1;
 }
@@ -1446,29 +1466,15 @@ input[type="radio"] {
 }
 
 .table-pinyin-cell {
-  display: flex;
-  align-items: flex-start;
-  gap: 6px;
   min-width: 0;
 }
 
-.pinyin-lock-button {
-  flex: 0 0 auto;
-  width: 1.6rem;
-  height: 1.6rem;
-  padding: 0;
-  border: 1px solid rgba(29, 29, 29, 0.1);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.78);
-  cursor: pointer;
-  font-size: 0.88rem;
+.pinyin-lock-marker {
+  display: inline-flex;
+  vertical-align: baseline;
+  color: #8b651c;
+  font-size: 0.86em;
   line-height: 1;
-  box-shadow: 0 8px 18px rgba(20, 35, 38, 0.08);
-}
-
-.pinyin-lock-button.is-locked {
-  background: rgba(24, 80, 86, 0.12);
-  border-color: rgba(24, 80, 86, 0.28);
 }
 
 .derivative-marker {
@@ -1623,7 +1629,7 @@ input[type="radio"] {
   position: fixed;
   right: 20px;
   bottom: 22px;
-  z-index: 5;
+  z-index: 2147483647;
   min-width: 220px;
   background: rgba(16, 47, 51, 0.92);
   color: #fff7ee;
@@ -1997,7 +2003,4 @@ input[type="radio"] {
     min-width: 0;
   }
 
-  .entry-table {
-    min-width: 980px;
-  }
 }

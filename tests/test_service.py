@@ -504,6 +504,46 @@ class WordServiceTestCase(TestCase):
         self.assertTrue(updated["imported_at"].startswith("2026-04-12T12:30:00"))
         self.assertTrue(updated["labeled_at"].startswith("2026-04-12T13:45:00"))
 
+    def test_create_entry_applies_defaults_and_generates_pinyin(self) -> None:
+        with mock.patch("app.service.transliterate_phrase", return_value="xīn cí"):
+            entry = self.service.create_entry({"phrase": "新词"})
+
+        self.assertEqual(entry["phrase"], "新词")
+        self.assertEqual(entry["pinyin"], "xīn cí")
+        self.assertFalse(entry["pinyin_locked"])
+        self.assertEqual(entry["weight"], 1)
+        self.assertFalse(entry["weight_defined"])
+        self.assertEqual(entry["status"], "pending")
+        self.assertIsNone(entry["labeled_at"])
+
+    def test_create_entry_can_set_all_editable_fields(self) -> None:
+        entry = self.service.create_entry(
+            {
+                "phrase": "新词",
+                "pinyin": "xīn cí",
+                "pinyin_locked": True,
+                "derivatives": "衍生一\n衍生二",
+                "weight": "-3",
+                "status": "accepted",
+                "imported_at": "2026-04-26T10:11:12+08:00",
+            }
+        )
+
+        self.assertEqual(entry["pinyin"], "xīn cí")
+        self.assertTrue(entry["pinyin_locked"])
+        self.assertEqual(entry["derivatives"], ["衍生一", "衍生二"])
+        self.assertEqual(entry["weight"], -3)
+        self.assertTrue(entry["weight_defined"])
+        self.assertEqual(entry["status"], "accepted")
+        self.assertEqual(entry["imported_at"], "2026-04-26T10:11:12+08:00")
+        self.assertIsNotNone(entry["labeled_at"])
+
+    def test_create_entry_rejects_duplicate_phrase(self) -> None:
+        self.service.create_entry({"phrase": "新词", "pinyin": "xīn cí"})
+
+        with self.assertRaises(ValueError):
+            self.service.create_entry({"phrase": "新词", "pinyin": "xīn cí"})
+
     def test_update_entry_rejects_duplicate_phrase(self) -> None:
         with mock.patch("app.service.transliterate_phrase", side_effect=["yī", "èr"]):
             self.service.import_text("一\n二")
@@ -835,6 +875,70 @@ class WordServiceTestCase(TestCase):
             ),
             "甲\t甲 😀 😄\n",
         )
+
+    def test_bulk_update_derivatives_can_merge_or_overwrite_existing_items(self) -> None:
+        with mock.patch("app.service.transliterate_phrase", side_effect=["a", "b", "c"]):
+            self.service.import_text("甲\n乙\n丙")
+
+        entries = {
+            item["phrase"]: item
+            for item in self.service.list_entries(page=1, page_size=10)["items"]
+        }
+        self.service.update_entry(entries["甲"]["id"], {"derivatives": ["旧", "同"]})
+
+        merged = self.service.bulk_update_derivatives(
+            "甲\t同\t新\n乙 😄 😄\n不存在\t跳过\n坏行",
+            mode="merge",
+        )
+
+        self.assertEqual(merged["total_lines"], 4)
+        self.assertEqual(merged["valid_lines"], 3)
+        self.assertEqual(merged["matched_count"], 2)
+        self.assertEqual(merged["updated_count"], 2)
+        self.assertEqual(merged["skipped_missing_count"], 1)
+        self.assertEqual(merged["skipped_invalid_count"], 1)
+        self.assertEqual(merged["missing_phrases"], ["不存在"])
+        self.assertEqual(merged["invalid_lines"], [4])
+        self.assertEqual(self.service.get_entry(entries["甲"]["id"])["derivatives"], ["旧", "同", "新"])
+        self.assertEqual(self.service.get_entry(entries["乙"]["id"])["derivatives"], ["😄"])
+
+        overwritten = self.service.bulk_update_derivatives("甲\t覆盖", mode="overwrite")
+
+        self.assertEqual(overwritten["updated_count"], 1)
+        self.assertEqual(self.service.get_entry(entries["甲"]["id"])["derivatives"], ["覆盖"])
+
+    def test_bulk_update_derivatives_rejects_empty_or_invalid_input(self) -> None:
+        with self.assertRaises(ValueError):
+            self.service.bulk_update_derivatives("", mode="merge")
+        with self.assertRaises(ValueError):
+            self.service.bulk_update_derivatives("甲", mode="merge")
+        with self.assertRaises(ValueError):
+            self.service.bulk_update_derivatives("甲\t乙", mode="replace")
+
+    def test_bulk_update_derivatives_preserves_space_in_phrase_when_tab_separated(self) -> None:
+        self.service.import_text("Hello World\thello world\t1")
+
+        result = self.service.bulk_update_derivatives("Hello World\t🌍", mode="merge")
+        entry = self.service.list_entries(query="Hello World")["items"][0]
+
+        self.assertEqual(result["matched_count"], 1)
+        self.assertEqual(entry["derivatives"], ["🌍"])
+
+    def test_bulk_update_derivatives_rejects_too_many_lines_and_skips_overlong_items(self) -> None:
+        with self.assertRaises(ValueError):
+            self.service.bulk_update_derivatives("\n".join("甲\t乙" for _ in range(100_001)))
+
+        self.service.import_text("甲\tjiǎ\t1\n乙\tyǐ\t1")
+        result = self.service.bulk_update_derivatives(f"甲\t短\n乙\t{'很长' * 1000}", mode="merge")
+        entries = {
+            item["phrase"]: item
+            for item in self.service.list_entries(page=1, page_size=10)["items"]
+        }
+
+        self.assertEqual(result["skipped_invalid_count"], 1)
+        self.assertEqual(result["updated_count"], 1)
+        self.assertEqual(entries["甲"]["derivatives"], ["短"])
+        self.assertEqual(entries["乙"]["derivatives"], [])
 
     def test_export_dictionary_sanitizes_dictionary_name(self) -> None:
         with mock.patch("app.service.transliterate_phrase", return_value="a"):

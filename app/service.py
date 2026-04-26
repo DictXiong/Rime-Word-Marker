@@ -30,6 +30,11 @@ DEFAULT_DICTIONARY_NAME = "rime_word_marker_export"
 DEFAULT_REVIEW_SESSION = "default"
 IMPORT_IGNORED_CHARACTERS = "\u200c"
 DERIVATIVE_SPLIT_PATTERN = re.compile(r"[\t\r\n]+")
+DERIVATIVE_BULK_SPACE_FIELD_PATTERN = re.compile(r"[ ]+")
+DERIVATIVE_BULK_MODES = {"merge", "overwrite"}
+DERIVATIVE_BULK_MAX_LINES = 100_000
+DERIVATIVE_BULK_MAX_DERIVATIVES_PER_PHRASE = 200
+DERIVATIVE_BULK_MAX_ITEM_LENGTH = 200
 REVIEW_HISTORY_LIMIT = 500
 REVIEW_MODE_SEQUENTIAL = "sequential"
 REVIEW_MODE_RANDOM = "random"
@@ -1692,6 +1697,210 @@ class WordService:
             "updated_count": len(normalized_ids),
             "entries": [entry for entry in updated_entries if entry is not None],
         }
+
+    def bulk_update_derivatives(self, text: str, mode: str = "merge") -> dict[str, Any]:
+        mode = str(mode or "merge").strip()
+        if mode not in DERIVATIVE_BULK_MODES:
+            raise ValueError("延伸词更新模式必须是 merge 或 overwrite。")
+
+        mappings: dict[str, list[str]] = {}
+        total_lines = 0
+        skipped_invalid_count = 0
+        invalid_lines: list[int] = []
+        for line_number, raw_line in enumerate(str(text or "").splitlines(), 1):
+            if line_number > DERIVATIVE_BULK_MAX_LINES:
+                raise ValueError(f"一次最多导入 {DERIVATIVE_BULK_MAX_LINES} 行延伸词。")
+            line = raw_line.strip()
+            if not line:
+                continue
+            if len(line) > 20_000:
+                skipped_invalid_count += 1
+                if len(invalid_lines) < 20:
+                    invalid_lines.append(line_number)
+                continue
+            total_lines += 1
+            raw_parts = line.split("\t") if "\t" in line else DERIVATIVE_BULK_SPACE_FIELD_PATTERN.split(line)
+            parts = [part.strip() for part in raw_parts if part.strip()]
+            if len(parts) < 2:
+                skipped_invalid_count += 1
+                if len(invalid_lines) < 20:
+                    invalid_lines.append(line_number)
+                continue
+
+            phrase = parts[0]
+            derivatives = self._normalize_derivatives(parts[1:])
+            derivatives = [
+                item
+                for item in derivatives
+                if len(item) <= DERIVATIVE_BULK_MAX_ITEM_LENGTH
+            ][:DERIVATIVE_BULK_MAX_DERIVATIVES_PER_PHRASE]
+            if not phrase or not derivatives:
+                skipped_invalid_count += 1
+                if len(invalid_lines) < 20:
+                    invalid_lines.append(line_number)
+                continue
+
+            if mode == "merge" and phrase in mappings:
+                mappings[phrase] = self._normalize_derivatives([*mappings[phrase], *derivatives])
+            else:
+                mappings[phrase] = derivatives
+
+        if total_lines == 0:
+            raise ValueError("请先输入要更新的延伸词。")
+        if not mappings:
+            raise ValueError("没有可更新的延伸词行。")
+
+        rows_by_phrase: dict[str, sqlite3.Row] = {}
+        phrases = list(mappings)
+        with self._managed_connection() as connection:
+            for start in range(0, len(phrases), SQLITE_IN_MAX_VARIABLES):
+                chunk = phrases[start : start + SQLITE_IN_MAX_VARIABLES]
+                placeholders = ",".join("?" for _ in chunk)
+                rows = connection.execute(
+                    f"SELECT * FROM entries WHERE phrase IN ({placeholders})",
+                    chunk,
+                ).fetchall()
+                rows_by_phrase.update({row["phrase"]: row for row in rows})
+
+            updated_count = 0
+            unchanged_count = 0
+            missing_phrases: list[str] = []
+            for phrase in phrases:
+                row = rows_by_phrase.get(phrase)
+                if row is None:
+                    if len(missing_phrases) < 20:
+                        missing_phrases.append(phrase)
+                    continue
+
+                current_derivatives = self._load_derivatives(row["derivatives"])
+                incoming_derivatives = mappings[phrase]
+                next_derivatives = (
+                    self._normalize_derivatives([*current_derivatives, *incoming_derivatives])
+                    if mode == "merge"
+                    else incoming_derivatives
+                )
+                if next_derivatives == current_derivatives:
+                    unchanged_count += 1
+                    continue
+
+                connection.execute(
+                    "UPDATE entries SET derivatives = ? WHERE id = ?",
+                    (json.dumps(next_derivatives, ensure_ascii=False), row["id"]),
+                )
+                updated_count += 1
+
+            connection.commit()
+
+        matched_count = len(rows_by_phrase)
+        skipped_missing_count = len(phrases) - matched_count
+        return {
+            "mode": mode,
+            "total_lines": total_lines,
+            "valid_lines": len(mappings),
+            "matched_count": matched_count,
+            "updated_count": updated_count,
+            "unchanged_count": unchanged_count,
+            "skipped_missing_count": skipped_missing_count,
+            "skipped_invalid_count": skipped_invalid_count,
+            "missing_phrases": missing_phrases,
+            "invalid_lines": invalid_lines,
+        }
+
+    def create_entry(self, payload: dict[str, Any]) -> dict[str, Any]:
+        allowed_keys = {
+            "phrase",
+            "pinyin",
+            "pinyin_locked",
+            "derivatives",
+            "weight",
+            "status",
+            "imported_at",
+            "labeled_at",
+        }
+        unexpected_keys = set(payload) - allowed_keys
+        if unexpected_keys:
+            raise ValueError(f"包含不支持的字段：{', '.join(sorted(unexpected_keys))}")
+
+        phrase = str(payload.get("phrase", "")).strip()
+        if not phrase:
+            raise ValueError("词条不能为空。")
+
+        pinyin = str(payload.get("pinyin", "") or "").strip()
+        if not pinyin:
+            pinyin = transliterate_phrase(phrase)
+
+        pinyin_locked = self._coerce_bool(payload.get("pinyin_locked"))
+        derivatives = self._normalize_derivatives(payload.get("derivatives"))
+
+        raw_weight = payload.get("weight", "")
+        if raw_weight is None or str(raw_weight).strip() == "":
+            weight = 1
+            weight_defined = False
+        else:
+            try:
+                weight = int(str(raw_weight).strip())
+            except ValueError as exc:
+                raise ValueError("词频必须是整数。") from exc
+            weight_defined = True
+
+        status = str(payload.get("status", PENDING) or PENDING).strip()
+        if status not in VALID_STATUSES:
+            raise ValueError("无效状态。")
+
+        imported_at = (
+            self._normalize_datetime_input(
+                payload.get("imported_at"),
+                field_name="导入时间",
+                allow_empty=False,
+            )
+            if "imported_at" in payload
+            else self._now()
+        )
+
+        labeled_at_provided = "labeled_at" in payload
+        if labeled_at_provided:
+            labeled_at = self._normalize_datetime_input(
+                payload.get("labeled_at"),
+                field_name="标注时间",
+                allow_empty=True,
+            )
+        elif status in {ACCEPTED, REJECTED}:
+            labeled_at = self._now()
+        else:
+            labeled_at = None
+
+        with self._managed_connection() as connection:
+            try:
+                cursor = connection.execute(
+                    """
+                    INSERT INTO entries (
+                        phrase, pinyin, pinyin_locked, derivatives, weight, weight_defined,
+                        status, imported_at, labeled_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        phrase,
+                        pinyin,
+                        1 if pinyin_locked else 0,
+                        json.dumps(derivatives, ensure_ascii=False),
+                        weight,
+                        1 if weight_defined else 0,
+                        status,
+                        imported_at,
+                        labeled_at,
+                    ),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise ValueError("词条已存在，无法新增重复词条。") from exc
+            connection.commit()
+            entry_id = int(cursor.lastrowid)
+
+        if status in {ACCEPTED, REJECTED}:
+            self._invalidate_ai_training_examples_cache()
+        entry = self.get_entry(entry_id)
+        if entry is None:  # pragma: no cover - guarded by insert
+            raise LookupError("词条不存在。")
+        return entry
 
     def update_entry(self, entry_id: int, updates: dict[str, Any]) -> dict[str, Any]:
         allowed_keys = {

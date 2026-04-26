@@ -185,14 +185,14 @@
           </div>
 
           <div class="bulk-actions">
+            <button class="primary-button small-inline" type="button" id="openCreateEntryButton">新增词条</button>
             <button class="ghost-button small-inline" type="button" id="selectPageButton">选择本页</button>
             <button class="ghost-button small-inline" type="button" id="clearSelectionButton">清空选择</button>
             <button class="decision-button mini-accept" type="button" id="bulkAcceptButton">接受</button>
             <button class="decision-button mini-pending" type="button" id="bulkPendingButton">待定</button>
             <button class="decision-button mini-reject" type="button" id="bulkRejectButton">拒绝</button>
-            <button class="ghost-button small-inline" type="button" id="bulkLockPinyinButton">锁定拼音</button>
-            <button class="ghost-button small-inline" type="button" id="bulkUnlockPinyinButton">解锁拼音</button>
             <button class="primary-button small-inline" type="button" id="openBulkEditButton">编辑</button>
+            <button class="primary-button small-inline" type="button" id="openBulkDerivativesButton">延伸词</button>
           </div>
         </section>
 
@@ -250,9 +250,15 @@
 
           <div class="field field-wide">
             <span>拼音操作</span>
-            <button class="ghost-button small-inline left-align" type="button" id="editAutoPinyinButton">
-              根据当前词条自动重算拼音
-            </button>
+            <div class="inline-action-row">
+              <button class="ghost-button small-inline left-align" type="button" id="editAutoPinyinButton">
+                根据当前词条自动重算拼音
+              </button>
+              <label class="inline-check">
+                <input type="checkbox" id="editPinyinLocked" />
+                锁定拼音
+              </label>
+            </div>
           </div>
 
           <label class="field">
@@ -278,6 +284,77 @@
         <div class="dialog-actions">
           <button class="ghost-button" type="button" id="editClearLabeledAtButton">清空标注时间</button>
           <button class="primary-button" type="submit">保存全部修改</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog class="edit-dialog" id="entryCreateDialog">
+      <form class="edit-dialog-card" id="entryCreateForm" method="dialog">
+        <div class="panel-head compact-head">
+          <div>
+            <p class="section-kicker">新增词条</p>
+            <h2>逐条添加新词条</h2>
+          </div>
+          <button class="ghost-button small-inline" type="button" id="entryCreateCloseButton">关闭</button>
+        </div>
+
+        <div class="edit-grid">
+          <label class="field">
+            <span>词条</span>
+            <input type="text" id="createPhrase" required />
+          </label>
+
+          <label class="field">
+            <span>词频</span>
+            <input type="number" id="createWeight" step="1" placeholder="默认 1（未定义）" />
+          </label>
+
+          <label class="field field-wide">
+            <span>拼音</span>
+            <input type="text" id="createPinyin" placeholder="留空时自动生成带声调拼音" />
+          </label>
+
+          <label class="field field-wide">
+            <span>延伸词</span>
+            <textarea id="createDerivatives" rows="1" placeholder="一行一个延伸词"></textarea>
+          </label>
+
+          <div class="field field-wide">
+            <span>拼音操作</span>
+            <div class="inline-action-row">
+              <button class="ghost-button small-inline left-align" type="button" id="createAutoPinyinButton">
+                根据当前词条自动生成拼音
+              </button>
+              <label class="inline-check">
+                <input type="checkbox" id="createPinyinLocked" />
+                锁定拼音
+              </label>
+            </div>
+          </div>
+
+          <label class="field">
+            <span>状态</span>
+            <select id="createStatus">
+              <option value="pending">待定</option>
+              <option value="accepted">接受</option>
+              <option value="rejected">拒绝</option>
+            </select>
+          </label>
+
+          <label class="field">
+            <span>导入时间</span>
+            <input type="datetime-local" id="createImportedAt" />
+          </label>
+
+          <label class="field">
+            <span>标注时间</span>
+            <input type="datetime-local" id="createLabeledAt" />
+          </label>
+        </div>
+
+        <div class="dialog-actions">
+          <span class="dialog-note">保存后会保留状态等设置，并清空词条输入，方便继续添加。</span>
+          <button class="primary-button" type="submit">保存并继续新增</button>
         </div>
       </form>
     </dialog>
@@ -323,6 +400,14 @@
           </label>
 
           <label class="field toggle-field">
+            <span><input type="checkbox" id="bulkApplyPinyinLocked" /> 统一拼音锁定</span>
+            <select id="bulkPinyinLocked">
+              <option value="1">锁定拼音</option>
+              <option value="0">解锁拼音</option>
+            </select>
+          </label>
+
+          <label class="field toggle-field">
             <span><input type="checkbox" id="bulkApplyLabeledAt" /> 统一标注时间</span>
             <input type="datetime-local" id="bulkLabeledAt" />
           </label>
@@ -336,6 +421,49 @@
         <div class="dialog-actions">
           <span class="dialog-note" id="bulkTargetSummary">将作用于 0 条词条</span>
           <button class="primary-button" type="submit">应用到所选词条</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog class="edit-dialog" id="bulkDerivativesDialog">
+      <form class="edit-dialog-card" id="bulkDerivativesForm" method="dialog">
+        <div class="panel-head compact-head">
+          <div>
+            <p class="section-kicker">批量延伸词</p>
+            <h2>按词条批量更新延伸词</h2>
+          </div>
+          <button class="ghost-button small-inline" type="button" id="bulkDerivativesCloseButton">关闭</button>
+        </div>
+
+        <label class="field field-wide">
+          <span>延伸词内容</span>
+          <textarea
+            id="bulkDerivativesText"
+            rows="8"
+            placeholder="每行一个词条：原词条	延伸词	延伸词2&#10;也可以用空格代替 tab：原词条 延伸词 延伸词2"
+          ></textarea>
+          <small class="field-helper">只更新数据库中已有词条；不存在的原词条会跳过，不会新建。</small>
+        </label>
+
+        <div class="field field-wide">
+          <span>已有延伸词处理方式</span>
+          <div class="inline-action-row">
+            <label class="inline-check">
+              <input type="radio" name="bulkDerivativesMode" value="merge" checked />
+              合并去重
+            </label>
+            <label class="inline-check">
+              <input type="radio" name="bulkDerivativesMode" value="overwrite" />
+              覆盖现有延伸词
+            </label>
+          </div>
+        </div>
+
+        <p class="panel-note" id="bulkDerivativesResult" hidden></p>
+
+        <div class="dialog-actions">
+          <span class="dialog-note">格式：原词条 + tab/空格 + 一个或多个延伸词</span>
+          <button class="primary-button" type="submit">更新延伸词</button>
         </div>
       </form>
     </dialog>
