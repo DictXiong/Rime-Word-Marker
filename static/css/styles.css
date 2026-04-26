@@ -789,6 +789,84 @@ textarea {
   min-width: 120px;
 }
 
+.manage-filter-toolbar .filter-field {
+  flex: 0 1 230px;
+  min-width: 200px;
+}
+
+.filter-popover {
+  position: relative;
+}
+
+.filter-popover-button {
+  width: 100%;
+  min-height: 46px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  border: 1px solid rgba(29, 29, 29, 0.1);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.82);
+  color: var(--ink);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.filter-popover-button span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.filter-popover-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: 40;
+  width: min(340px, calc(100vw - 32px));
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid rgba(29, 29, 29, 0.1);
+  border-radius: 22px;
+  background: rgba(255, 250, 243, 0.98);
+  box-shadow: 0 24px 50px rgba(40, 35, 28, 0.18);
+}
+
+.filter-popover-panel[hidden] {
+  display: none;
+}
+
+.filter-popover-panel fieldset {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.filter-popover-panel legend {
+  width: 100%;
+  margin-bottom: 2px;
+  color: var(--muted);
+  font-size: 0.86rem;
+  font-weight: 800;
+}
+
+.filter-popover-panel label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
 .manage-filter-toolbar .page-size-field {
   flex: 0 1 120px;
   min-width: 108px;
@@ -1769,10 +1847,17 @@ input[type="radio"] {
 
   .manage-filter-toolbar .field.grow,
   .manage-filter-toolbar .slim-field,
+  .manage-filter-toolbar .filter-field,
   .manage-filter-toolbar .page-size-field,
   .manage-filter-toolbar .range-field {
     flex-basis: auto;
     min-width: 0;
+  }
+
+  .filter-popover-panel {
+    left: 0;
+    right: auto;
+    width: min(100%, calc(100vw - 28px));
   }
 
   .ai-panel-grid {

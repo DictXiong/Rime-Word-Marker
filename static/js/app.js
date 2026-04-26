@@ -62,6 +62,8 @@ const state = {
     pageSize: 30,
     status: "all",
     aiStatus: "all",
+    hasDerivatives: false,
+    pinyinLocked: false,
     query: "",
     minWeight: "",
     maxWeight: "",
@@ -93,11 +95,11 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   if (els.manageFilterForm) {
     state.manage.query = els.manageQuery?.value.trim() || "";
-    state.manage.status = els.manageStatus?.value || "all";
-    state.manage.aiStatus = els.manageAiStatus?.value || "all";
+    syncManageFilterStateFromControls();
     state.manage.minWeight = els.manageMinWeight?.value.trim() || "";
     state.manage.maxWeight = els.manageMaxWeight?.value.trim() || "";
     state.manage.pageSize = Number(els.managePageSize?.value || state.manage.pageSize);
+    updateManageFilterSummary();
     await loadAiOverview();
     await loadManageEntries();
   }
@@ -266,8 +268,13 @@ function cacheElements() {
 
   els.manageFilterForm = document.getElementById("manageFilterForm");
   els.manageQuery = document.getElementById("manageQuery");
-  els.manageStatus = document.getElementById("manageStatus");
-  els.manageAiStatus = document.getElementById("manageAiStatus");
+  els.manageFilterToggle = document.getElementById("manageFilterToggle");
+  els.manageFilterPanel = document.getElementById("manageFilterPanel");
+  els.manageFilterSummary = document.getElementById("manageFilterSummary");
+  els.manageStatusInputs = [...document.querySelectorAll('input[name="manageStatus"]')];
+  els.manageAiStatusInputs = [...document.querySelectorAll('input[name="manageAiStatus"]')];
+  els.manageHasDerivatives = document.getElementById("manageHasDerivatives");
+  els.managePinyinLocked = document.getElementById("managePinyinLocked");
   els.manageMinWeight = document.getElementById("manageMinWeight");
   els.manageMaxWeight = document.getElementById("manageMaxWeight");
   els.managePageSize = document.getElementById("managePageSize");
@@ -564,12 +571,38 @@ function bindEvents() {
       event.preventDefault();
       state.manage.page = 1;
       state.manage.query = els.manageQuery.value.trim();
-      state.manage.status = els.manageStatus.value;
-      state.manage.aiStatus = els.manageAiStatus.value;
+      syncManageFilterStateFromControls();
+      updateManageFilterSummary();
       state.manage.minWeight = els.manageMinWeight?.value.trim() || "";
       state.manage.maxWeight = els.manageMaxWeight?.value.trim() || "";
       state.manage.pageSize = Number(els.managePageSize.value);
       await loadManageEntries();
+    });
+
+    els.manageFilterToggle?.addEventListener("click", () => {
+      const nextOpen = !!els.manageFilterPanel?.hidden;
+      setManageFilterPanelOpen(nextOpen);
+    });
+    [
+      ...els.manageStatusInputs,
+      ...els.manageAiStatusInputs,
+      els.manageHasDerivatives,
+      els.managePinyinLocked,
+    ].filter(Boolean).forEach((input) => {
+      input.addEventListener("change", () => {
+        syncManageFilterStateFromControls();
+        updateManageFilterSummary();
+      });
+    });
+    document.addEventListener("click", (event) => {
+      if (
+        !els.manageFilterPanel ||
+        els.manageFilterPanel.hidden ||
+        event.target.closest("#manageStatusFilter")
+      ) {
+        return;
+      }
+      setManageFilterPanelOpen(false);
     });
 
     els.pagePrev.addEventListener("click", async () => {
@@ -1481,6 +1514,12 @@ async function loadManageEntries() {
       ai_status: state.manage.aiStatus,
       q: state.manage.query,
     });
+    if (state.manage.hasDerivatives) {
+      params.set("has_derivatives", "1");
+    }
+    if (state.manage.pinyinLocked) {
+      params.set("pinyin_locked", "1");
+    }
     if (state.manage.minWeight) {
       params.set("min_weight", state.manage.minWeight);
     }
@@ -1509,6 +1548,42 @@ async function loadManageEntries() {
       </div>
     `;
   }
+}
+
+function syncManageFilterStateFromControls() {
+  state.manage.status = getCheckedValue(els.manageStatusInputs, "all");
+  state.manage.aiStatus = getCheckedValue(els.manageAiStatusInputs, "all");
+  state.manage.hasDerivatives = !!els.manageHasDerivatives?.checked;
+  state.manage.pinyinLocked = !!els.managePinyinLocked?.checked;
+}
+
+function getCheckedValue(inputs, fallback) {
+  const checked = [...(inputs || [])].find((input) => input.checked);
+  return checked?.value || fallback;
+}
+
+function updateManageFilterSummary() {
+  if (!els.manageFilterSummary) return;
+  const parts = [];
+  if (state.manage.status !== "all") {
+    parts.push(STATUS_LABELS[state.manage.status] || state.manage.status);
+  }
+  if (state.manage.aiStatus !== "all") {
+    parts.push(state.manage.aiStatus === "none" ? "AI 未标注" : AI_STATUS_LABELS[state.manage.aiStatus]);
+  }
+  if (state.manage.hasDerivatives) {
+    parts.push("有延伸词");
+  }
+  if (state.manage.pinyinLocked) {
+    parts.push("拼音锁定");
+  }
+  els.manageFilterSummary.textContent = parts.length ? parts.join(" · ") : "全部";
+}
+
+function setManageFilterPanelOpen(open) {
+  if (!els.manageFilterPanel || !els.manageFilterToggle) return;
+  els.manageFilterPanel.hidden = !open;
+  els.manageFilterToggle.setAttribute("aria-expanded", open ? "true" : "false");
 }
 
 async function jumpToManagePage() {

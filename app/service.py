@@ -2055,6 +2055,8 @@ class WordService:
         query: str | None = None,
         min_weight: int | None = None,
         max_weight: int | None = None,
+        has_derivatives: bool = False,
+        pinyin_locked: bool = False,
     ) -> dict[str, Any]:
         page = max(page, 1)
         page_size = min(max(page_size, 1), 100)
@@ -2094,6 +2096,12 @@ class WordService:
         if max_weight is not None:
             where_clauses.append("weight <= ?")
             parameters.append(max_weight)
+
+        if has_derivatives:
+            where_clauses.append("derivatives NOT IN ('', '[]')")
+
+        if pinyin_locked:
+            where_clauses.append("pinyin_locked = 1")
 
         where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
         offset = (page - 1) * page_size

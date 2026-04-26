@@ -65,26 +65,37 @@
             <input type="text" id="manageQuery" placeholder="支持模糊搜索" />
           </label>
 
-          <label class="field compact slim-field">
-            <span>状态</span>
-            <select id="manageStatus">
-              <option value="all">全部</option>
-              <option value="pending">待定</option>
-              <option value="accepted">接受</option>
-              <option value="rejected">拒绝</option>
-            </select>
-          </label>
-
-          <label class="field compact slim-field">
-            <span>AI 标注</span>
-            <select id="manageAiStatus">
-              <option value="all">全部</option>
-              <option value="none">未标注</option>
-              <option value="pending">AI 待定</option>
-              <option value="accepted">AI 接受</option>
-              <option value="rejected">AI 拒绝</option>
-            </select>
-          </label>
+          <div class="field compact filter-field">
+            <span>筛选条件</span>
+            <div class="filter-popover" id="manageStatusFilter">
+              <button class="filter-popover-button" type="button" id="manageFilterToggle">
+                <span id="manageFilterSummary">全部</span>
+                <span aria-hidden="true">▾</span>
+              </button>
+              <div class="filter-popover-panel" id="manageFilterPanel" hidden>
+                <fieldset>
+                  <legend>人工状态</legend>
+                  <label><input type="radio" name="manageStatus" value="all" checked /> 全部</label>
+                  <label><input type="radio" name="manageStatus" value="accepted" /> 接受</label>
+                  <label><input type="radio" name="manageStatus" value="pending" /> 待定</label>
+                  <label><input type="radio" name="manageStatus" value="rejected" /> 拒绝</label>
+                </fieldset>
+                <fieldset>
+                  <legend>AI 标注</legend>
+                  <label><input type="radio" name="manageAiStatus" value="all" checked /> 全部</label>
+                  <label><input type="radio" name="manageAiStatus" value="none" /> AI 未标注</label>
+                  <label><input type="radio" name="manageAiStatus" value="accepted" /> AI 接受</label>
+                  <label><input type="radio" name="manageAiStatus" value="pending" /> AI 待定</label>
+                  <label><input type="radio" name="manageAiStatus" value="rejected" /> AI 拒绝</label>
+                </fieldset>
+                <fieldset>
+                  <legend>附加条件</legend>
+                  <label><input type="checkbox" id="manageHasDerivatives" /> 有延伸词条</label>
+                  <label><input type="checkbox" id="managePinyinLocked" /> 拼音已锁定</label>
+                </fieldset>
+              </div>
+            </div>
+          </div>
 
           <div class="field compact range-field">
             <span>词频范围</span>

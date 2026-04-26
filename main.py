@@ -174,6 +174,8 @@ class AppHandler(SimpleHTTPRequestHandler):
                 keyword = query.get("q", [""])[0]
                 min_weight = _to_int(query.get("min_weight", [""])[0], default=None)
                 max_weight = _to_int(query.get("max_weight", [""])[0], default=None)
+                has_derivatives = _load_bool(query.get("has_derivatives", [None])[0], False)
+                pinyin_locked = _load_bool(query.get("pinyin_locked", [None])[0], False)
                 payload = _service().list_entries(
                     page=page,
                     page_size=page_size,
@@ -182,6 +184,8 @@ class AppHandler(SimpleHTTPRequestHandler):
                     query=keyword,
                     min_weight=min_weight,
                     max_weight=max_weight,
+                    has_derivatives=has_derivatives,
+                    pinyin_locked=pinyin_locked,
                 )
                 self._send_json(200, payload)
                 return

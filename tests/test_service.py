@@ -1150,6 +1150,27 @@ class WordServiceTestCase(TestCase):
         self.assertEqual(negative_page["total"], 1)
         self.assertEqual(negative_page["items"][0]["phrase"], "负频")
 
+    def test_list_entries_can_filter_by_derivatives_and_pinyin_lock(self) -> None:
+        with mock.patch("app.service.transliterate_phrase", side_effect=["yī", "èr", "sān"]):
+            first = self.service.create_entry({"phrase": "一", "derivatives": ["甲"]})
+            second = self.service.create_entry({"phrase": "二", "pinyin_locked": True})
+            third = self.service.create_entry(
+                {"phrase": "三", "derivatives": ["丙"], "pinyin_locked": True}
+            )
+
+        derivative_page = self.service.list_entries(page=1, page_size=10, has_derivatives=True)
+        locked_page = self.service.list_entries(page=1, page_size=10, pinyin_locked=True)
+        both_page = self.service.list_entries(
+            page=1,
+            page_size=10,
+            has_derivatives=True,
+            pinyin_locked=True,
+        )
+
+        self.assertEqual({item["id"] for item in derivative_page["items"]}, {first["id"], third["id"]})
+        self.assertEqual({item["id"] for item in locked_page["items"]}, {second["id"], third["id"]})
+        self.assertEqual([item["id"] for item in both_page["items"]], [third["id"]])
+
     def test_list_entries_prioritizes_exact_phrase_match(self) -> None:
         self.service.import_text("目标\tmu biao\t1\n目标延伸\tmu biao yan shen\t1")
 
