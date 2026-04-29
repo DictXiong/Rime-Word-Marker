@@ -1236,6 +1236,19 @@ class WordServiceTestCase(TestCase):
 
         self.assertFalse(renamed["pinyin_locked"])
 
+    def test_update_entry_can_lock_pinyin_while_renaming(self) -> None:
+        self.service.import_text("测试\tce shi\t8")
+        entry = self.service.get_next_pending()
+
+        renamed = self.service.update_entry(
+            entry["id"],
+            {"phrase": "新词", "pinyin": "xīn cí", "pinyin_locked": True},
+        )
+
+        self.assertEqual(renamed["phrase"], "新词")
+        self.assertEqual(renamed["pinyin"], "xīn cí")
+        self.assertTrue(renamed["pinyin_locked"])
+
     def test_batch_update_entries_preserves_ai_annotation_when_weight_input_changes(self) -> None:
         self.service.import_text("测试\tce shi\t8")
         entry = self.service.get_next_pending()

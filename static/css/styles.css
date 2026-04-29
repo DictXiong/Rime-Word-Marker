@@ -436,6 +436,24 @@ textarea {
   text-decoration: none;
 }
 
+.link-button {
+  appearance: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-weight: 800;
+  text-decoration: underline;
+  text-underline-offset: 4px;
+  cursor: pointer;
+}
+
+.link-button:hover {
+  color: #17444b;
+}
+
 .page-hero h1 {
   max-width: none;
   font-size: clamp(2.6rem, 5vw, 4.2rem);
@@ -1455,6 +1473,19 @@ input[type="radio"] {
 
 .entry-table tbody tr.is-selected {
   background: rgba(13, 103, 114, 0.08);
+}
+
+.table-quick-add {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid rgba(13, 103, 114, 0.14);
+  border-bottom: 0;
+  border-radius: 18px 18px 0 0;
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--muted);
 }
 
 .table-empty {

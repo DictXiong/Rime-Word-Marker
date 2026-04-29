@@ -17,6 +17,7 @@ const AI_WORKER_LABELS = {
 };
 const REVIEW_SESSION_STORAGE_KEY = "reviewSessionKey";
 const REVIEW_PREFER_AI_STORAGE_KEY = "reviewPreferAi";
+const QUICK_ADD_MAX_PHRASE_LENGTH = 80;
 let fallbackReviewSessionKey = null;
 
 function getCurrentPage() {
@@ -51,6 +52,7 @@ const state = {
     mode: "random",
     preferAi: getStoredReviewPreferAi(),
     markedCount: 0,
+    pinyinTouched: false,
   },
   ai: {
     overview: null,
@@ -75,6 +77,7 @@ const state = {
     entryId: null,
     forceClearLabeledAt: false,
     originalEntry: null,
+    pinyinTouched: false,
   },
 };
 
@@ -380,6 +383,9 @@ function bindEvents() {
       event.preventDefault();
       await saveCurrentReviewPinyin(false);
     });
+    els.reviewPinyinInput?.addEventListener("input", () => {
+      state.review.pinyinTouched = true;
+    });
     els.reviewAutoPinyinButton.addEventListener("click", async () => {
       await fillReviewPinyinFromPhrase();
     });
@@ -628,6 +634,12 @@ function bindEvents() {
       renderEntryList(state.manage.currentItems);
     });
 
+    els.entryList?.addEventListener("click", async (event) => {
+      const button = event.target.closest("[data-quick-add-phrase]");
+      if (!button) return;
+      await quickAddSearchedPhrase(button.dataset.quickAddPhrase || "");
+    });
+
     els.clearSelectionButton.addEventListener("click", () => {
       state.manage.selectedIds.clear();
       updateSelectedCount();
@@ -709,6 +721,12 @@ function bindEvents() {
     els.entryEditForm.addEventListener("submit", async (event) => {
       event.preventDefault();
       await saveEditForm();
+    });
+    els.editPinyin?.addEventListener("input", () => {
+      state.edit.pinyinTouched = true;
+      if (els.editPinyinLocked) {
+        els.editPinyinLocked.checked = true;
+      }
     });
     els.editAutoPinyinButton.addEventListener("click", async () => {
       await fillEditPinyinFromPhrase();
@@ -1405,6 +1423,7 @@ function paintReviewEntry(entry) {
   els.reviewWord.textContent = entry.phrase;
   els.reviewPinyin.textContent = entry.pinyin || "暂无拼音";
   els.reviewPinyinInput.value = entry.pinyin || "";
+  state.review.pinyinTouched = false;
   els.reviewPinyinInput.disabled = false;
   els.reviewAutoPinyinButton.disabled = false;
   els.reviewSavePinyinButton.disabled = false;
@@ -1432,6 +1451,7 @@ function renderReviewEmpty(message = "", canGoBack = false, animate = true) {
   els.reviewWord.textContent = "当前没有待定词条";
   els.reviewPinyin.textContent = message || "可以去导入更多词库，或回到上一个已标注词条继续调整。";
   els.reviewPinyinInput.value = "";
+  state.review.pinyinTouched = false;
   els.reviewPinyinInput.disabled = true;
   els.reviewAutoPinyinButton.disabled = true;
   els.reviewSavePinyinButton.disabled = true;
@@ -1599,13 +1619,30 @@ async function jumpToManagePage() {
 }
 
 function renderEntryList(items) {
+  const quickAddPhrase = getQuickAddPhraseFromManageQuery();
+  const canQuickAddSearchPhrase = shouldOfferQuickAddForSearch(items, quickAddPhrase);
   if (!items.length) {
-    els.entryList.innerHTML =
-      '<div class="table-empty"><strong>没有匹配词条</strong><span>调整搜索条件后再试试。</span></div>';
+    els.entryList.innerHTML = `
+      <div class="table-empty">
+        <strong>没有匹配词条</strong>
+        <span>调整搜索条件后再试试。${canQuickAddSearchPhrase ? renderQuickAddButton(quickAddPhrase) : ""}</span>
+      </div>
+    `;
     return;
   }
 
+  const quickAddNotice =
+    canQuickAddSearchPhrase
+      ? `
+        <div class="table-quick-add">
+          <span>没有完全匹配词条。</span>
+          ${renderQuickAddButton(quickAddPhrase)}
+        </div>
+      `
+      : "";
+
   els.entryList.innerHTML = `
+    ${quickAddNotice}
     <table class="entry-table">
       <colgroup>
         <col class="col-select" />
@@ -1638,6 +1675,53 @@ function renderEntryList(items) {
       </tbody>
     </table>
   `;
+}
+
+function shouldOfferQuickAddForSearch(items, phrase) {
+  if (!phrase) return false;
+  if (items.some((item) => item.phrase === phrase)) return false;
+  // Exact matches are ordered first by the backend, so page 1 is enough to decide.
+  return !items.length || state.manage.page === 1;
+}
+
+function renderQuickAddButton(phrase) {
+  if (!phrase) return "";
+  const escapedPhrase = escapeHtml(phrase);
+  return `<button class="link-button" type="button" data-quick-add-phrase="${escapedPhrase}">添加“${escapedPhrase}”</button>`;
+}
+
+function getQuickAddPhraseFromManageQuery() {
+  const phrase = String(state.manage.query || "").trim();
+  if (!phrase || phrase.length > QUICK_ADD_MAX_PHRASE_LENGTH) return "";
+  return phrase;
+}
+
+async function quickAddSearchedPhrase(phrase) {
+  const normalizedPhrase = String(phrase || "").trim();
+  if (!normalizedPhrase) return;
+
+  try {
+    const response = await postJSON("/api/entries/create", {
+      phrase: normalizedPhrase,
+      status: "accepted",
+    });
+    syncEntryAcrossViews(response.entry, { renderReview: false });
+    state.manage.query = normalizedPhrase;
+    if (els.manageQuery) {
+      els.manageQuery.value = normalizedPhrase;
+    }
+    await refreshAfterEntryCreate(response);
+    showToast(`已新增词条“${response.entry.phrase}”。`);
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+async function refreshAfterEntryCreate(response) {
+  await refreshStats(response.stats);
+  void loadAiOverview(false);
+  state.manage.page = 1;
+  await loadManageEntries();
 }
 
 function renderEntryRow(entry) {
@@ -1951,11 +2035,19 @@ async function saveCurrentReviewPinyin(useGeneratedPinyin) {
       els.reviewPinyinInput.value = pinyin;
     }
 
-    const payload = await postJSON(`/api/entries/${current.id}/update`, { pinyin });
+    const manuallyChangedPinyin =
+      state.review.pinyinTouched && pinyin && pinyin !== String(current.pinyin || "").trim();
+    const requestBody = { pinyin };
+    if (manuallyChangedPinyin) {
+      requestBody.pinyin_locked = true;
+    }
+
+    const payload = await postJSON(`/api/entries/${current.id}/update`, requestBody);
     syncEntryAcrossViews(payload.entry);
     await refreshStats(payload.stats);
     await loadManageEntries();
-    showToast("拼音已保存。");
+    state.review.pinyinTouched = false;
+    showToast(manuallyChangedPinyin ? "拼音已保存并锁定。" : "拼音已保存。");
   } catch (error) {
     showToast(error.message, true);
   }
@@ -1971,6 +2063,7 @@ async function fillReviewPinyinFromPhrase() {
   try {
     const pinyin = await fetchGeneratedPinyin(current.phrase);
     els.reviewPinyinInput.value = pinyin;
+    state.review.pinyinTouched = false;
     showToast("已按当前词条自动生成拼音。");
   } catch (error) {
     showToast(error.message, true);
@@ -1983,6 +2076,7 @@ async function openEditDialog(entryId) {
     state.edit.entryId = entry.id;
     state.edit.forceClearLabeledAt = false;
     state.edit.originalEntry = entry;
+    state.edit.pinyinTouched = false;
     els.editEntryId.value = String(entry.id);
     els.editPhrase.value = entry.phrase;
     els.editPinyin.value = entry.pinyin || "";
@@ -2008,6 +2102,7 @@ function closeEditDialog() {
   state.edit.entryId = null;
   state.edit.forceClearLabeledAt = false;
   state.edit.originalEntry = null;
+  state.edit.pinyinTouched = false;
   if (els.editDerivatives) {
     els.editDerivatives.style.height = "";
   }
@@ -2017,6 +2112,9 @@ function closeEditDialog() {
 function openCreateEntryDialog() {
   if (els.entryCreateForm) {
     els.entryCreateForm.reset();
+  }
+  if (els.createStatus) {
+    els.createStatus.value = "accepted";
   }
   if (els.createImportedAt) {
     els.createImportedAt.value = toDatetimeLocalValue(new Date().toISOString());
@@ -2079,10 +2177,7 @@ async function saveCreateEntryForm() {
   try {
     const response = await postJSON("/api/entries/create", payload);
     syncEntryAcrossViews(response.entry, { renderReview: false });
-    await refreshStats(response.stats);
-    void loadAiOverview(false);
-    state.manage.page = 1;
-    await loadManageEntries();
+    await refreshAfterEntryCreate(response);
     resetCreateEntryFormForNext();
     showToast(`已新增词条“${response.entry.phrase}”。`);
   } catch (error) {
@@ -2091,7 +2186,7 @@ async function saveCreateEntryForm() {
 }
 
 function resetCreateEntryFormForNext() {
-  const keepStatus = els.createStatus?.value || "pending";
+  const keepStatus = els.createStatus?.value || "accepted";
   const keepImportedAt = els.createImportedAt?.value || "";
   const keepPinyinLocked = !!els.createPinyinLocked?.checked;
   els.createPhrase.value = "";
@@ -2123,6 +2218,7 @@ async function fillEditPinyinFromPhrase() {
 
   try {
     els.editPinyin.value = await fetchGeneratedPinyin(phrase);
+    state.edit.pinyinTouched = false;
     showToast("已根据词条自动生成拼音。");
   } catch (error) {
     showToast(error.message, true);
@@ -2157,8 +2253,19 @@ async function saveEditForm() {
   }
 
   const originalEntry = state.edit.originalEntry;
+  const phraseChanged = payload.phrase !== String(originalEntry?.phrase || "").trim();
+  const manuallyEditedPinyin =
+    state.edit.pinyinTouched &&
+    payload.pinyin &&
+    payload.pinyin !== String(originalEntry?.pinyin || "").trim();
+  if (!manuallyEditedPinyin && phraseChanged && originalEntry?.pinyin_locked) {
+    payload.pinyin_locked = false;
+  }
+  const autoLockedPinyin = manuallyEditedPinyin && payload.pinyin_locked;
   const unlocksPinyin =
-    !!originalEntry?.pinyin_locked && payload.phrase !== String(originalEntry.phrase || "").trim();
+    !!originalEntry?.pinyin_locked &&
+    !payload.pinyin_locked &&
+    phraseChanged;
 
   try {
     const response = await postJSON(`/api/entries/${entryId}/update`, payload);
@@ -2168,9 +2275,11 @@ async function saveEditForm() {
     await loadManageEntries();
     closeEditDialog();
     showToast(
-      unlocksPinyin
-        ? "词条信息已更新；因词条内容变化，拼音锁定已自动解除。"
-        : "词条信息已更新。",
+      autoLockedPinyin
+        ? "词条信息已更新；拼音已自动锁定。"
+        : unlocksPinyin
+          ? "词条信息已更新；因词条内容变化，拼音锁定已自动解除。"
+          : "词条信息已更新。",
     );
   } catch (error) {
     showToast(error.message, true);

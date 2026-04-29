@@ -1951,10 +1951,10 @@ class WordService:
             else:
                 pinyin = current["pinyin"]
 
-            if phrase_changed:
-                pinyin_locked = False
-            elif "pinyin_locked" in updates:
+            if "pinyin_locked" in updates:
                 pinyin_locked = self._coerce_bool(updates.get("pinyin_locked"))
+            elif phrase_changed:
+                pinyin_locked = False
             else:
                 pinyin_locked = current["pinyin_locked"]
 
