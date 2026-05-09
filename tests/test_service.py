@@ -355,6 +355,22 @@ class WordServiceTestCase(TestCase):
         self.assertEqual(updated["weight"], 1)
         self.assertFalse(updated["weight_defined"])
 
+    def test_update_entry_can_clear_defined_weight(self) -> None:
+        self.service.import_text("测试\tce shi\t9")
+        entry = self.service.list_entries(page=1, page_size=10)["items"][0]
+
+        updated = self.service.update_entry(entry["id"], {"clear_weight": True})
+
+        self.assertEqual(updated["weight"], 1)
+        self.assertFalse(updated["weight_defined"])
+
+    def test_update_entry_rejects_weight_and_clear_weight_together(self) -> None:
+        self.service.import_text("测试\tce shi\t9")
+        entry = self.service.list_entries(page=1, page_size=10)["items"][0]
+
+        with self.assertRaises(ValueError):
+            self.service.update_entry(entry["id"], {"weight": "8", "clear_weight": True})
+
     def test_recompute_toneless_pinyin_updates_only_entries_without_tones(self) -> None:
         self.service.import_text("中国\tzhong guo\t1\n你好\tnǐ hǎo\t1")
 

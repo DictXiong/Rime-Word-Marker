@@ -101,6 +101,7 @@ class ConfigTestCase(TestCase):
         self.assertTrue(_is_public_path("/index.html"))
         self.assertTrue(_is_public_path("/js/app.js"))
         self.assertTrue(_is_public_path("/api/export"))
+        self.assertTrue(_is_public_path("/api/ping"))
         self.assertTrue(_is_public_path("/api/stats"))
         self.assertFalse(_is_public_path("/api/export/count"))
         self.assertFalse(_is_public_path("/manage"))

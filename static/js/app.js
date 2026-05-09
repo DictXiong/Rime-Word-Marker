@@ -688,6 +688,11 @@ function bindEvents() {
       if (!button) return;
 
       try {
+        if (button.dataset.weightAction) {
+          await adjustEntryWeightFromButton(button);
+          return;
+        }
+
         const payload = await postJSON(`/api/entries/${button.dataset.entryId}/status`, {
           status: button.dataset.status,
         });
@@ -1570,6 +1575,30 @@ async function loadManageEntries() {
   }
 }
 
+async function adjustEntryWeightFromButton(button) {
+  const entryId = Number(button.dataset.entryId);
+  const entry = state.manage.currentItems.find((item) => item.id === entryId);
+  if (!entry) {
+    throw new Error("未找到当前词条，请刷新后重试。");
+  }
+
+  const currentWeight = Number(entry.weight ?? 1);
+  const nextWeight =
+    button.dataset.weightAction === "up"
+      ? currentWeight + 10
+      : currentWeight > 10
+        ? 10
+        : currentWeight - 1;
+  const payload = await postJSON(`/api/entries/${entryId}/update`, {
+    weight: String(nextWeight),
+  });
+  syncEntryAcrossViews(payload.entry);
+  await refreshStats(payload.stats);
+  void loadAiOverview(false);
+  await loadManageEntries();
+  showToast(`词频已调整为 ${payload.entry.weight}。`);
+}
+
 function syncManageFilterStateFromControls() {
   state.manage.status = getCheckedValue(els.manageStatusInputs, "all");
   state.manage.aiStatus = getCheckedValue(els.manageAiStatusInputs, "all");
@@ -1827,9 +1856,18 @@ function renderAiStatusCell(entry) {
 
 function renderManageButton(entry, status) {
   const activeClass = entry.status === status ? `active ${status}` : "";
+  const weightAction =
+    entry.status === status && status === "accepted"
+      ? "up"
+      : entry.status === status && status === "rejected"
+        ? "down"
+        : "";
+  const label =
+    weightAction === "up" ? "提频" : weightAction === "down" ? "降频" : STATUS_LABELS[status];
+  const weightActionAttr = weightAction ? ` data-weight-action="${weightAction}"` : "";
   return `
-    <button class="table-status-button table-${status} ${activeClass}" data-entry-id="${entry.id}" data-status="${status}">
-      ${STATUS_LABELS[status]}
+    <button class="table-status-button table-${status} ${activeClass}" data-entry-id="${entry.id}" data-status="${status}"${weightActionAttr}>
+      ${label}
     </button>
   `;
 }
@@ -2087,7 +2125,7 @@ async function openEditDialog(entryId) {
       els.editDerivatives.value = (entry.derivatives || []).join("\n");
       autoResizeTextarea(els.editDerivatives);
     }
-    els.editWeight.value = String(entry.weight);
+    els.editWeight.value = entry.weight_defined ? String(entry.weight) : "";
     els.editStatus.value = entry.status;
     els.editImportedAt.value = toDatetimeLocalValue(entry.imported_at);
     els.editLabeledAt.value = toDatetimeLocalValue(entry.labeled_at);
@@ -2242,7 +2280,12 @@ async function saveEditForm() {
   };
 
   const nextWeight = els.editWeight.value.trim();
-  if (nextWeight !== String(state.edit.originalEntry?.weight ?? "")) {
+  const originalWeightValue = state.edit.originalEntry?.weight_defined
+    ? String(state.edit.originalEntry.weight)
+    : "";
+  if (!nextWeight) {
+    payload.clear_weight = true;
+  } else if (nextWeight !== originalWeightValue) {
     payload.weight = nextWeight;
   }
 

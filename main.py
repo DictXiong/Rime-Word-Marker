@@ -61,6 +61,7 @@ PUBLIC_STATIC_PATHS = {
 PUBLIC_API_PATHS = {
     "/api/export",
     "/api/health",
+    "/api/ping",
     "/api/stats",
 }
 
@@ -122,6 +123,10 @@ class AppHandler(SimpleHTTPRequestHandler):
         try:
             if parsed.path == "/api/health":
                 self._send_json(200, {"status": "ok"})
+                return
+
+            if parsed.path == "/api/ping":
+                self._send_json(200, {"status": "ok", "pong": True})
                 return
 
             if parsed.path == "/api/stats":

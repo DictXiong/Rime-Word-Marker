@@ -1909,6 +1909,7 @@ class WordService:
             "pinyin_locked",
             "derivatives",
             "weight",
+            "clear_weight",
             "status",
             "imported_at",
             "labeled_at",
@@ -1964,7 +1965,13 @@ class WordService:
 
             weight = current["weight"]
             weight_defined = current["weight_defined"]
-            if "weight" in updates:
+            clear_weight = self._coerce_bool(updates.get("clear_weight")) if "clear_weight" in updates else False
+            if clear_weight and "weight" in updates:
+                raise ValueError("不能同时设置词频和删除词频。")
+            if clear_weight:
+                weight = 1
+                weight_defined = False
+            elif "weight" in updates:
                 try:
                     weight = int(str(updates["weight"]).strip())
                 except ValueError as exc:
